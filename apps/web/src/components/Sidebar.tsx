@@ -2181,7 +2181,9 @@ export default function Sidebar() {
   const threads = useMemo(
     () =>
       allThreads.filter(
-        (thread) => !isInlineNoteThread(inlineNoteThreadKeys, thread.environmentId, thread.id),
+        (thread) =>
+          thread.purpose !== "pr-questions" &&
+          !isInlineNoteThread(inlineNoteThreadKeys, thread.environmentId, thread.id),
       ),
     [allThreads, inlineNoteThreadKeys],
   );

@@ -1,3 +1,5 @@
+import ChatView from "../components/ChatView";
+import { usePullRequestReviewThread } from "../components/pullRequest/usePullRequestReviewThread";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { Spinner } from "~/components/ui/spinner";
 import { pullRequestHostOf, resolveEnvironmentMachineKind } from "@t3tools/contracts";
@@ -639,7 +641,8 @@ function PullRequestsRouteView() {
     readonly projectIds?: ReadonlyArray<ProjectId>;
   }> => {
     const plain = queryEnvironmentIds.map((environmentId) => ({ environmentId }));
-    if (!projectsKnown || scopedProjectId !== undefined) return plain;
+    if (!projectsKnown || scopedProjectId !== undefined || search.involvement === "reviewing")
+      return plain;
     const assignment = assignProjectsToEnvironments(
       projects,
       queryEnvironmentIds,
@@ -657,7 +660,7 @@ function PullRequestsRouteView() {
       if (projectIds.length === (totals.get(environmentId) ?? 0)) return [{ environmentId }];
       return [{ environmentId, projectIds }];
     });
-  }, [projects, projectsKnown, queryEnvironmentIds, scopedProjectId]);
+  }, [projects, projectsKnown, queryEnvironmentIds, scopedProjectId, search.involvement]);
   // Part of the scope, since a different split is a different question and its answers must not
   // be filed under the same page state.
   const assignmentKey = useMemo(
@@ -726,6 +729,8 @@ function PullRequestsRouteView() {
               // request, and so on — so asking them is the difference between a page of results
               // and a page of everything with the answer somewhere further down it.
               involvement: search.involvement,
+              scope:
+                search.involvement === "reviewing" && !scopedProjectId ? "account" : "projects",
               limit: pageSize,
               ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
               ...(projectIds ? { projectIds } : {}),
@@ -770,6 +775,7 @@ function PullRequestsRouteView() {
         input: {
           state: search.state,
           involvement: search.involvement,
+          scope: search.involvement === "reviewing" && !scopedProjectId ? "account" : "projects",
           limit: PAGE_SIZE,
           ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
           ...(projectIds ? { projectIds } : {}),
@@ -795,6 +801,7 @@ function PullRequestsRouteView() {
       input: {
         state: "all",
         involvement: search.involvement,
+        scope: search.involvement === "reviewing" && !scopedProjectId ? "account" : "projects",
         limit: PAGE_SIZE,
         ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
         ...(projectIds ? { projectIds } : {}),
@@ -829,6 +836,7 @@ function PullRequestsRouteView() {
         input: {
           state: search.state,
           involvement,
+          scope: involvement === "reviewing" && !scopedProjectId ? "account" : "projects",
           limit: PAGE_SIZE,
           ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
           ...(projectIds ? { projectIds } : {}),
@@ -2022,7 +2030,20 @@ function PullRequestsRouteView() {
     selectSurfaceInUrl(null);
   };
 
-  // This page has no ChatView, so it handles the shared panel shortcuts itself.
+  const review = usePullRequestReviewThread(
+    panelEnvironmentId,
+    renderedPullRequestSurface
+      ? {
+          projectId: renderedPullRequestSurface.projectId as ProjectId,
+          repository: renderedPullRequestSurface.repository,
+          number: renderedPullRequestSurface.number,
+          host: renderedPullRequestSurface.host,
+        }
+      : null,
+  );
+  const [showReviewChat, setShowReviewChat] = useState(false);
+
+  // The page owns the review panel shortcuts even while a chat sits beside it.
   const copyPullRequestFromShortcut = useEffectEvent((event: KeyboardEvent) => {
     if (!openPanelPullRequestUrl) return;
     event.preventDefault();
@@ -2074,7 +2095,27 @@ function PullRequestsRouteView() {
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
       <div className="relative flex min-h-0 flex-1">
         {pullRequestsSupported && rightPanelPresent ? openPanelControls : null}
-        <PullRequestsColumn {...columnProps} />
+        {review.threadRef && showReviewChat ? (
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="flex items-center gap-3 border-b px-4 py-2">
+              <Button variant="ghost" size="sm" onClick={() => setShowReviewChat(false)}>
+                Back to pull requests
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                Isolated review workspace{review.headSha ? ` · ${review.headSha.slice(0, 7)}` : ""}
+              </span>
+            </div>
+            <ChatView
+              key={`${review.threadRef.environmentId}:${review.threadRef.threadId}`}
+              routeKind="server"
+              environmentId={review.threadRef.environmentId}
+              threadId={review.threadRef.threadId}
+              externalReviewPanel
+            />
+          </div>
+        ) : (
+          <PullRequestsColumn {...columnProps} />
+        )}
 
         {rightPanelPresent && renderedPullRequestSurface && panelEnvironmentId !== null ? (
           <RightPanelTabs
@@ -2127,6 +2168,14 @@ function PullRequestsRouteView() {
             pullRequestStatusSeeds={listedPullRequestTabStatuses}
           >
             <PullRequestDetailPanel
+              {...(review.threadRef
+                ? { composerDraftTarget: review.threadRef, threadRef: review.threadRef }
+                : {})}
+              onAskAgent={async (detail, newConversation) => {
+                const threadRef = await review.ensure(detail, newConversation);
+                setShowReviewChat(true);
+                return threadRef;
+              }}
               getShortcutContext={getShortcutContext}
               shortcutsEnabled={activePullRequestSurface?.id === renderedPullRequestSurface.id}
               key={renderedPullRequestSurface.id}

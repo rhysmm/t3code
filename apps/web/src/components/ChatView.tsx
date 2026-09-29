@@ -758,6 +758,7 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       threadSyncPhase?: ThreadSyncPhase | null;
       routeKind: "server";
+      externalReviewPanel?: boolean;
       draftId?: never;
     }
   | {
@@ -768,6 +769,7 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       threadSyncPhase?: never;
       routeKind: "draft";
+      externalReviewPanel?: boolean;
       draftId: DraftId;
     };
 
@@ -1482,6 +1484,7 @@ function releaseChatTimelineAnchor<T extends { readonly messageId: MessageId | n
 }
 
 export default function ChatView(props: ChatViewProps) {
+  const chatRootRef = useRef<HTMLDivElement>(null);
   const {
     environmentId,
     threadId,
@@ -2107,7 +2110,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadKey,
     panelAnimationDurationMs,
   );
-  const rightPanelPresent = rightPanelPresence.present;
+  const rightPanelPresent = !props.externalReviewPanel && rightPanelPresence.present;
   const rightPanelControlsInPanel = shouldUseRightPanelSheet && rightPanelPresent && rightPanelOpen;
   const rightPanelControlsAtRoot = rightPanelPresent && !shouldUseRightPanelSheet;
   const renderedRightPanelSurface = rightPanelPresence.value?.activeSurface ?? null;
@@ -6850,6 +6853,12 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
+      if (
+        props.externalReviewPanel &&
+        event.target instanceof Node &&
+        !chatRootRef.current?.contains(event.target)
+      )
+        return;
       if (preventRepeatedTerminalCloseShortcut(event, keybindings)) {
         event.stopPropagation();
         return;
@@ -6886,6 +6895,11 @@ export default function ChatView(props: ChatViewProps) {
         context: shortcutContext,
       });
       if (!command) return;
+      if (
+        props.externalReviewPanel &&
+        (command.startsWith("rightPanel.") || command === "thread.copyReference")
+      )
+        return;
 
       if (command === "thread.copyReference") {
         event.preventDefault();
@@ -7131,6 +7145,7 @@ export default function ChatView(props: ChatViewProps) {
     toggleRightPanelMaximized,
     toggleTerminalVisibility,
     composerRef,
+    props.externalReviewPanel,
   ]);
 
   // Paste-to-focus: the resting composer blurs on a click into the timeline,
@@ -9654,7 +9669,7 @@ export default function ChatView(props: ChatViewProps) {
       terminalAvailable={activeProject !== null}
       terminalOpen={terminalUiState.terminalOpen}
       terminalShortcutLabel={shortcutLabelForCommand(keybindings, "terminal.toggle")}
-      rightPanelAvailable={activeProject !== null}
+      rightPanelAvailable={!props.externalReviewPanel && activeProject !== null}
       rightPanelOpen={rightPanelOpen}
       rightPanelShortcutLabel={shortcutLabelForCommand(keybindings, "rightPanel.toggle")}
       // Suppressed while the Agents surface is visible: the roster itself is
@@ -9866,7 +9881,10 @@ export default function ChatView(props: ChatViewProps) {
   });
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+    <div
+      ref={chatRootRef}
+      className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background"
+    >
       <Dialog
         open={
           deviceSetupThread !== null &&

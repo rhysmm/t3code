@@ -553,6 +553,8 @@ export type PullRequestListCursors = typeof PullRequestListCursors.Type;
 
 export const PullRequestListInput = Schema.Struct({
   state: PullRequestListState,
+  /** Search the signed-in GitHub account, including repositories not added as projects. */
+  scope: Schema.optional(Schema.Literals(["projects", "account"])),
   involvement: Schema.optional(PullRequestInvolvement),
   filters: Schema.optional(PullRequestListFilters),
   projectId: Schema.optional(ProjectId),
@@ -821,6 +823,7 @@ export const PullRequestInvalidateInput = Schema.Struct({
 export type PullRequestInvalidateInput = typeof PullRequestInvalidateInput.Type;
 
 export const PullRequestDetail = Schema.Struct({
+  headSha: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   provider: SourceControlProviderKind,
   capabilities: PullRequestCapabilities,
   /** What this viewer may do, which `capabilities` says nothing about. Both narrow the page. */

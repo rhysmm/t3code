@@ -43,7 +43,11 @@ vi.mock("~/lib/sourceControlActions", () => ({
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
 vi.mock("~/state/pullRequests", async (importOriginal) => ({
   ...(await importOriginal<typeof import("~/state/pullRequests")>()),
-  pullRequestEnvironment: { detail: () => "detail", activity: () => "activity" },
+  pullRequestEnvironment: {
+    detail: () => "detail",
+    activity: () => "activity",
+    diff: () => "diff",
+  },
   usePullRequestTurnRefresh: () => 0,
   useSharedPullRequestSummary: () => null,
 }));
@@ -66,7 +70,7 @@ vi.mock("~/state/usePullRequestStack", () => ({
     refresh,
   }),
 }));
-vi.mock("../ui/toast", () => ({ toastManager: { add: vi.fn(), update: vi.fn() } }));
+vi.mock("../ui/toast", () => ({ toastManager: { add: vi.fn(), update: vi.fn(), close: vi.fn() } }));
 vi.mock("../ui/tooltip", () => ({
   TooltipProvider: Wrapper,
   Tooltip: Wrapper,
@@ -247,6 +251,41 @@ const actions = [
   "Fix check",
   "Add to agent",
 ];
+
+it("keeps the code review open while sending selected lines to the adjacent conversation", async () => {
+  const onAskAgent = vi.fn().mockResolvedValue(threadRef);
+  useComposerDraftStore.getState().setPrompt(threadRef, "Keep my review question");
+  await act(async () => {
+    renderer = create(
+      <PullRequestDetailPanel
+        environmentId={threadRef.environmentId}
+        reference={detail}
+        onAskAgent={onAskAgent}
+        shortcutsEnabled={false}
+        getShortcutContext={() => ({
+          terminalFocus: false,
+          terminalOpen: false,
+          previewFocus: false,
+          previewOpen: false,
+          isWeb: true,
+          isDesktop: false,
+        })}
+      />,
+    );
+  });
+  await click("Code");
+  await click("Add to agent");
+  const draft = useComposerDraftStore.getState().getComposerDraft(threadRef);
+  expect(draft?.prompt).toContain("Keep my review question");
+  expect(draft?.prompt).toContain("Fix this line");
+  expect(draft?.reviewComments).toEqual(
+    expect.arrayContaining([expect.objectContaining({ filePath: "a.ts", diff: "+broken()" })]),
+  );
+  // The same mounted code surface can add another selection without leaving the review.
+  await click("Add to agent");
+  expect(newThread).not.toHaveBeenCalled();
+  expect(prepareThread).not.toHaveBeenCalled();
+});
 
 // The surface ChatView opens for `detail`, and the thread states it can be opened beside. The
 // context prop is derived here the way ChatView derives it, so a wrong answer from the thread's

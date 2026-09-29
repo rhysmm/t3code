@@ -198,6 +198,8 @@ export interface GitFetchPullRequestBranchInput {
 }
 
 export interface GitFetchPullRequestHeadCommitInput {
+  /** Use gh's authenticated account without installing a persistent Git credential helper. */
+  readonly useGitHubCredentials?: boolean;
   cwd: string;
   prNumber: number;
 }

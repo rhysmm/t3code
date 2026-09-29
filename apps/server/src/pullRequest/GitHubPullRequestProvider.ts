@@ -260,6 +260,8 @@ export const make = Effect.gen(function* () {
     listChangeRequestsAcross: (input) =>
       cli
         .searchPullRequests({
+          account: input.account,
+          after: input.after,
           cwd: input.cwd,
           host: input.host,
           repositories: input.repositories,
@@ -275,6 +277,7 @@ export const make = Effect.gen(function* () {
           Effect.mapError(fail("listChangeRequestsAcross")),
           Effect.map((batch) => ({
             truncated: batch.truncated,
+            nextCursor: batch.nextCursor,
             items: batch.items.map((item) => ({
               ...item,
               author: withAvatar(item.author, new Map<string, string>(), input.host),

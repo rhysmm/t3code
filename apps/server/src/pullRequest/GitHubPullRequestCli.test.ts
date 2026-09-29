@@ -16,6 +16,11 @@ import * as GitHubPullRequestCli from "./GitHubPullRequestCli.ts";
 import { BASE_COMPARISON_GRAPHQL_QUERY } from "./gitHubPullRequestJson.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeSearchRequest = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({ query: Schema.String, variables: Schema.Struct({ after: Schema.String }) }),
+  ),
+);
 
 const coreResponse = (pullRequest: Readonly<Record<string, unknown>> = {}) => ({
   data: {
@@ -212,7 +217,7 @@ function searchItem(number: number, repository: string, updatedAt: string) {
 }
 
 function searchPage(nodes: ReadonlyArray<unknown>, hasNextPage = false) {
-  return output(JSON.stringify({ data: { search: { pageInfo: { hasNextPage }, nodes } } }));
+  return output(encodeJson({ data: { search: { pageInfo: { hasNextPage }, nodes } } }));
 }
 
 /** The search a batched read sent, which travels in the request body rather than in argv. */
@@ -934,6 +939,40 @@ layer("GitHubPullRequestCli.layer", (it) => {
         'is:pr is:closed is:unmerged review-requested:bilal "pull requests page" ' +
           "updated:<=2026-07-02T00:00:00Z sort:updated-desc repo:acme/web repo:pingdotgg/t3code",
       );
+    }),
+  );
+
+  it.effect("searches the account without repo qualifiers and uses an exact cursor page", () =>
+    Effect.gen(function* () {
+      mockedExecute.mockReturnValue(
+        Effect.succeed(
+          output(
+            encodeJson({
+              data: { search: { nodes: [], pageInfo: { hasNextPage: true, endCursor: "next" } } },
+            }),
+          ),
+        ),
+      );
+      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+      const page = yield* cli.searchPullRequests({
+        cwd: "/w",
+        host: "github.com",
+        repositories: [],
+        account: true,
+        after: "previous",
+        state: "open",
+        involvement: "reviewing",
+        viewer: "bilal",
+        limit: 10,
+      });
+      assert.strictEqual(
+        searchQueryOfCall(0),
+        "is:pr is:open review-requested:bilal sort:updated-desc",
+      );
+      const request = yield* decodeSearchRequest(mockedExecute.mock.calls[0]![0].stdin!);
+      assert.strictEqual(request.variables.after, "previous");
+      assert.include(request.query, "first: 10,");
+      assert.strictEqual(page.nextCursor, "next");
     }),
   );
 

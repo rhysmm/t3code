@@ -46,6 +46,7 @@ export function buildArchivedThreadGroups(input: {
     const environmentLabel = input.environmentLabels[entry.environmentId] ?? null;
     const threadsByProjectId = new Map<string, EnvironmentThreadShell[]>();
     for (const thread of entry.snapshot.threads) {
+      if (thread.purpose === "pr-questions") continue;
       if (thread.archivedAt === null) {
         continue;
       }

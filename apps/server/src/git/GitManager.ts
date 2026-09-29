@@ -14,6 +14,9 @@ import * as Order from "effect/Order";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
+import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import * as ServerConfig from "../config.ts";
 import {
   GitActionProgressEvent,
   GitActionProgressPhase,
@@ -702,6 +705,9 @@ export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const gh = yield* GitHubCli.GitHubCli;
+  const config = yield* ServerConfig.ServerConfig;
+  const reviewPreparation = yield* Semaphore.make(1);
 
   const sourceControlProvider = (cwd: string) => sourceControlProviders.resolve({ cwd });
   const serverSettingsService = yield* ServerSettings.ServerSettingsService;
@@ -2330,6 +2336,88 @@ export const make = Effect.gen(function* () {
   const preparePullRequestThread: GitManager["Service"]["preparePullRequestThread"] = Effect.fn(
     "preparePullRequestThread",
   )(function* (input) {
+    if (input.mode === "review") {
+      return yield* Effect.gen(function* () {
+        // The credential project can belong to a different repository in the account inbox.
+        const match = /^https:\/\/([a-zA-Z0-9.-]+)\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)\/?$/.exec(
+          input.reference,
+        );
+        if (!match)
+          return yield* new GitManagerError({
+            operation: "preparePullRequestThread",
+            cwd: input.cwd,
+            detail: "Review workspaces require a GitHub pull request URL.",
+          });
+        const [, host, owner, repository, number] = match;
+        if (
+          !host ||
+          !owner ||
+          !repository ||
+          !number ||
+          [owner, repository].some((part) => part === "." || part === "..")
+        )
+          return yield* new GitManagerError({
+            operation: "preparePullRequestThread",
+            cwd: input.cwd,
+            detail: "Invalid GitHub repository URL.",
+          });
+        const remoteUrl = `https://${host}/${owner}/${repository}.git`;
+        let cwd = input.cwd;
+        const remote = yield* gitCore.readConfigValue(cwd, "remote.origin.url");
+        if (!remote || normalizeGitRemoteUrl(remote) !== normalizeGitRemoteUrl(remoteUrl)) {
+          cwd = path.join(config.baseDir, "review-repositories", host, owner, repository);
+          if (!(yield* fileSystem.exists(path.join(cwd, ".git")))) {
+            yield* fileSystem.makeDirectory(path.dirname(cwd), { recursive: true });
+            yield* gh.execute({
+              cwd: input.cwd,
+              args: ["repo", "clone", remoteUrl, cwd],
+              timeoutMs: 120_000,
+            });
+          }
+        }
+        const summary = yield* (yield* sourceControlProvider(cwd)).getChangeRequest({
+          cwd,
+          reference: input.reference,
+        });
+        const { commitSha } = yield* gitCore.fetchPullRequestHeadCommit({
+          cwd,
+          prNumber: Number(number),
+          useGitHubCredentials: true,
+        });
+        if (input.expectedHeadSha && input.expectedHeadSha !== commitSha) {
+          return yield* new GitManagerError({
+            operation: "preparePullRequestThread",
+            cwd,
+            detail: "This pull request changed. Refresh the review before starting a conversation.",
+          });
+        }
+        const branch = `t3code/review-${number}-${commitSha}-${yield* randomUUIDv4(cwd)}`;
+        const worktree = yield* gitCore.createWorktree(
+          { cwd, refName: commitSha, newRefName: branch, path: null },
+          { submodules: "none" },
+        );
+        return {
+          pullRequest: toResolvedPullRequest(summary),
+          branch,
+          worktreePath: worktree.worktree.path,
+          workspaceRoot: cwd,
+          headSha: commitSha,
+          isOnPullRequestHead: true,
+        };
+      }).pipe(
+        reviewPreparation.withPermit,
+        Effect.mapError(
+          (cause) =>
+            new GitManagerError({
+              operation: "preparePullRequestThread",
+              cwd: input.cwd,
+              detail:
+                cause instanceof Error ? cause.message : "Could not prepare the review workspace.",
+              cause,
+            }),
+        ),
+      );
+    }
     const maybeRunSetupScript = (worktreePath: string) => {
       if (!input.threadId) {
         return Effect.void;

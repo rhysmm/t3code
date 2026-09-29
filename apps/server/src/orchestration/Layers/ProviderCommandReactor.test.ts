@@ -897,34 +897,45 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("title");
   });
 
-  it("routes Auto again on each turn and stores the latest chosen model", async () => {
-    const autoModelRouting = {
-      candidates: [
-        {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "quick",
-          options: [{ id: "reasoningEffort", value: "low" }],
-        },
-        {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "deep",
-          options: [{ id: "reasoningEffort", value: "high" }],
-        },
-      ],
-    };
-    const jevResponse = (choice: "quick" | "deep") =>
-      new Response(
-        JSON.stringify({ answers: { complexity: { type: "choice", choice, confidence: 0.9 } } }),
-        { status: 200 },
-      );
-    const fetcher = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(jevResponse("quick"))
-      .mockResolvedValueOnce(jevResponse("deep"));
-    try {
-      const harness = await createHarness({ autoModel: { enabled: true, apiKey: "test-key" } });
-      await Effect.runPromise(
-        harness.engine.dispatch({
+  effectIt.effect("routes Auto again on each turn and stores the latest chosen model", () =>
+    Effect.gen(function* () {
+      const autoModelRouting = {
+        candidates: [
+          {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "quick",
+            options: [{ id: "reasoningEffort", value: "low" }],
+          },
+          {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "deep",
+            options: [{ id: "reasoningEffort", value: "high" }],
+          },
+        ],
+      };
+      const jevResponse = (choice: "quick" | "deep") =>
+        new Response(
+          JSON.stringify({ answers: { complexity: { type: "choice", choice, confidence: 0.9 } } }),
+          { status: 200 },
+        );
+      const fetcher = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(jevResponse("quick"))
+        .mockResolvedValueOnce(jevResponse("deep"));
+      try {
+        const harness = yield* Effect.promise(() =>
+          createHarness({ autoModel: { enabled: true, apiKey: "test-key" } }),
+        );
+        const firstTurnSent = yield* Deferred.make<void>();
+        const secondTurnSent = yield* Deferred.make<void>();
+        for (const sent of [firstTurnSent, secondTurnSent]) {
+          harness.sendTurn.mockImplementationOnce(() =>
+            Deferred.succeed(sent, undefined).pipe(
+              Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") }),
+            ),
+          );
+        }
+        yield* harness.engine.dispatch({
           type: "thread.turn.start",
           commandId: CommandId.make("cmd-auto-turn-1"),
           threadId: ThreadId.make("thread-1"),
@@ -939,22 +950,22 @@ describe("ProviderCommandReactor", () => {
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
           createdAt: "2026-01-01T00:00:00.000Z",
-        }),
-      );
-      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "quick",
-          options: [{ id: "reasoningEffort", value: "low" }],
-        },
-      });
-      expect(fetcher).toHaveBeenCalledOnce();
-      expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
-        Authorization: "Bearer test-key",
-      });
-      await Effect.runPromise(
-        harness.engine.dispatch({
+        });
+        yield* Deferred.await(firstTurnSent);
+        yield* Effect.promise(() => harness.drain());
+        expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+        expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "quick",
+            options: [{ id: "reasoningEffort", value: "low" }],
+          },
+        });
+        expect(fetcher).toHaveBeenCalledOnce();
+        expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
+          Authorization: "Bearer test-key",
+        });
+        yield* harness.engine.dispatch({
           type: "thread.turn.start",
           commandId: CommandId.make("cmd-auto-turn-2"),
           threadId: ThreadId.make("thread-1"),
@@ -968,25 +979,27 @@ describe("ProviderCommandReactor", () => {
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
           createdAt: "2026-01-01T00:00:01.000Z",
-        }),
-      );
-      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
-      expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "deep",
-          options: [{ id: "reasoningEffort", value: "high" }],
-        },
-      });
-      expect(fetcher).toHaveBeenCalledTimes(2);
-      const thread = (await harness.readModel()).threads.find(
-        (entry) => entry.id === ThreadId.make("thread-1"),
-      );
-      expect(thread?.modelSelection.model).toBe("deep");
-    } finally {
-      fetcher.mockRestore();
-    }
-  });
+        });
+        yield* Deferred.await(secondTurnSent);
+        yield* Effect.promise(() => harness.drain());
+        expect(harness.sendTurn).toHaveBeenCalledTimes(2);
+        expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "deep",
+            options: [{ id: "reasoningEffort", value: "high" }],
+          },
+        });
+        expect(fetcher).toHaveBeenCalledTimes(2);
+        const thread = (yield* harness.snapshotQuery.getSnapshot()).threads.find(
+          (entry) => entry.id === ThreadId.make("thread-1"),
+        );
+        expect(thread?.modelSelection.model).toBe("deep");
+      } finally {
+        fetcher.mockRestore();
+      }
+    }),
+  );
 
   effectIt.effect("forwards only a user-renamed title when starting a provider session", () =>
     Effect.gen(function* () {

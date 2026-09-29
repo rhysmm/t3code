@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { serializeLegacyContextMessage } from "@t3tools/shared/composerContextLegacySend";
+import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 
 import { buildMessageContext, terminalContextReference } from "../../lib/composerContextRecords";
@@ -73,6 +74,38 @@ export async function sendQueuedMessage(
     if (reason !== null) throw new Error(reason);
   };
   try {
+    if (message.inlineReview) {
+      const { record, messageId: questionMessageId, detailUrl } = message.inlineReview;
+      const shell = readThreadShell(threadRef);
+      if (!shell) throw new Error("The PR question thread is not available.");
+      const thread = readThread(threadRef) ?? undefined;
+      if (!queue.markDispatching(threadKey, message.id, createLocalDispatchSnapshot(thread)))
+        return;
+      await run(threadEnvironment.startTurn, {
+        environmentId,
+        input: {
+          threadId,
+          message: {
+            messageId: questionMessageId,
+            role: "user",
+            attachments: [],
+            text: [
+              `Review ${detailUrl}. This is a local inline conversation, ${record.inlineConversation?.id}.`,
+              `The selected diff is from ${record.inlineConversation?.commitOid ?? record.inlineConversation?.headSha}. Your isolated workspace stays pinned to its original commit; do not switch or refresh it.`,
+              "Answer the question about the selected code. Do not edit files or post GitHub comments unless explicitly asked. Respond directly and concisely; your answer appears beneath the selected lines.",
+              formatComposerContextReference(record),
+              record.text,
+            ].join("\n\n"),
+            context: { version: 1, records: [record] },
+          },
+          runtimeMode: shell.runtimeMode,
+          interactionMode: shell.interactionMode,
+          createdAt: new Date().toISOString(),
+        },
+      });
+      queue.finishSend(threadKey, message.id);
+      return;
+    }
     const { sendableTerminalContexts, hasSendableContent } = deriveComposerSendState({
       prompt: message.prompt,
       imageCount: attachments.length,

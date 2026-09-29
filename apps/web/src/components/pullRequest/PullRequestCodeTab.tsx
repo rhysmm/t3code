@@ -28,6 +28,12 @@ import { useAtomRefresh } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import {
+  InlineReviewChatContext,
+  PullRequestInlineChat,
+  PullRequestInlineChatDraft,
+  useInlinePullRequestChat,
+} from "./PullRequestInlineChat";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 import { useTheme } from "~/hooks/useTheme";
@@ -99,6 +105,7 @@ interface ReviewAnnotationGroup {
   readonly threads: ReadonlyArray<PullRequestReviewThread>;
   readonly pending: ReadonlyArray<PendingReviewComment>;
   readonly draft: boolean;
+  readonly inlineIds: ReadonlyArray<string>;
 }
 
 type ReviewAnnotation = DiffLineAnnotation<ReviewAnnotationGroup>;
@@ -139,6 +146,7 @@ interface MutableAnnotationGroup {
   readonly threads: PullRequestReviewThread[];
   readonly pending: PendingReviewComment[];
   draft: boolean;
+  readonly inlineIds: string[];
 }
 
 interface DraftAnchor {
@@ -220,6 +228,8 @@ function PullRequestCodeTab({
   /** Bumped by the panel's refresh button: drop the accumulated pages and re-read the diff. */
   refreshToken?: number;
 }) {
+  const inlineChat = useInlinePullRequestChat(environmentId, reference, detail);
+  const inlineEnabled = detail.provider === "github";
   const { resolvedTheme } = useTheme();
   const settings = useClientSettings();
   const [toggledFiles, setToggledFiles] = useState<ReadonlySet<string>>(() => new Set());
@@ -379,6 +389,7 @@ function PullRequestCodeTab({
   // A comment is posted against the pull request's head diff, so a line number taken from one
   // commit's own diff would land somewhere else entirely. Commenting waits for the whole change.
   const canCommentOnLines = review.inlineComment && commit === null;
+  const canSelectLines = inlineEnabled || canCommentOnLines || onAddToAgentSelection !== undefined;
   // Every slice is parsed on its own and the result held, so a slice arriving costs one parse
   // rather than one per slice already on screen. Its cache key carries the theme, which is what
   // the tokenizer caches against, so a theme change is still a fresh parse.
@@ -434,9 +445,10 @@ function PullRequestCodeTab({
     if (appliedRefreshToken.current === refreshToken) return;
     appliedRefreshToken.current = refreshToken;
     setSliceState({ key: scopeKey, cursor: null, slices: NO_SLICES });
-    refreshFirstDiffPage();
+    // The panel refreshes the whole-PR page even before Code is opened.
+    if (commit !== null) refreshFirstDiffPage();
     refreshFilesViewed();
-  }, [refreshToken, scopeKey, refreshFirstDiffPage, refreshFilesViewed]);
+  }, [refreshToken, scopeKey, commit, refreshFirstDiffPage, refreshFilesViewed]);
   const nextCursor = loadedSlices.at(-1)?.nextCursor ?? null;
   // What a slice withheld: the host declining to inline part of it, or a patch the viewer could
   // not structure and so dropped. Neither says anything about there being more to fetch.
@@ -489,6 +501,7 @@ function PullRequestCodeTab({
             threads: [],
             pending: [],
             draft: false,
+            inlineIds: [],
           };
           groups.set(key, created);
           return created;
@@ -508,6 +521,19 @@ function PullRequestCodeTab({
             groupAt(anchor.side, anchor.line).pending.push(comment);
           }
         }
+        for (const discussion of inlineChat.discussions) {
+          const anchor = discussion.record.inlineConversation;
+          if (
+            !anchor ||
+            discussion.record.filePath !== path ||
+            anchor.headSha !== detail.headSha ||
+            anchor.commitOid !== commit
+          )
+            continue;
+          const side = anchor.side === "additions" ? "right" : "left";
+          if (isLineInFileDiff(fileDiff, side, anchor.line))
+            groupAt(side, anchor.line).inlineIds.push(discussion.id);
+        }
         if (draft?.fileKey === fileKey) {
           const anchor = getReviewPositionAnchor(draft.position);
           groupAt(anchor.side, anchor.line).draft = true;
@@ -516,7 +542,12 @@ function PullRequestCodeTab({
         const annotations: ReviewAnnotation[] = [...groups.values()].map((group) => ({
           side: toViewerSide(group.side),
           lineNumber: group.line,
-          metadata: { threads: group.threads, pending: group.pending, draft: group.draft },
+          metadata: {
+            threads: group.threads,
+            pending: group.pending,
+            draft: group.draft,
+            inlineIds: group.inlineIds,
+          },
         }));
         return {
           fileKey,
@@ -529,7 +560,7 @@ function PullRequestCodeTab({
             annotations
               .map(
                 ({ side, lineNumber, metadata }) =>
-                  `${side}:${lineNumber}:${metadata.draft ? "d" : ""}:${metadata.pending
+                  `${side}:${lineNumber}:${metadata.inlineIds.join(",")}:${metadata.draft ? "d" : ""}:${metadata.pending
                     .map((comment) => `${comment.id}:${comment.body}`)
                     .join(",")}:${metadata.threads
                     .map(
@@ -555,7 +586,16 @@ function PullRequestCodeTab({
           ),
         };
       }),
-    [commit, detail.reviewThreads, draft, files, pendingComments, placedThreadIds],
+    [
+      commit,
+      detail.headSha,
+      detail.reviewThreads,
+      draft,
+      files,
+      pendingComments,
+      placedThreadIds,
+      inlineChat.discussions,
+    ],
   );
 
   const items = useMemo<CodeViewDiffItem<ReviewAnnotationGroup>[]>(
@@ -691,7 +731,7 @@ function PullRequestCodeTab({
 
   const beginComment = useCallback(
     (range: SelectedLineRange | null, context: { item: CodeViewItem<ReviewAnnotationGroup> }) => {
-      if (!range || !canCommentOnLines) return;
+      if (!range || !canSelectLines) return;
       const item = context.item;
       if (item.type !== "diff") return;
       const file = files.find((candidate) => buildFileDiffRenderKey(candidate) === item.id);
@@ -716,14 +756,18 @@ function PullRequestCodeTab({
         range,
       });
     },
-    [canCommentOnLines, files, parsedSlices],
+    [canSelectLines, files, parsedSlices],
   );
 
   // Built here because the parsed diff only lives here, and built by the same function the
   // thread panel's own line selection uses — the gesture is the same one, so a second reading of
   // the hunks would only be a second place for it to drift.
   const finishSelection = useCallback(
-    (anchor: DraftAnchor, text: string, onFinish: (comment: ReviewCommentContext) => void) => {
+    async (
+      anchor: DraftAnchor,
+      text: string,
+      onFinish: (comment: ReviewCommentContext) => void | Promise<boolean | void>,
+    ) => {
       const file = files.find((candidate) => buildFileDiffRenderKey(candidate) === anchor.fileKey);
       const comment =
         file === undefined
@@ -737,9 +781,10 @@ function PullRequestCodeTab({
               range: anchor.range,
               text,
             });
-      setDraft(null);
-      setSelectedLines(null);
-      if (comment !== null) onFinish(comment);
+      if (comment !== null && (await onFinish(comment)) !== false) {
+        setDraft(null);
+        setSelectedLines(null);
+      }
     },
     [detail.number, files],
   );
@@ -879,8 +924,8 @@ function PullRequestCodeTab({
       themeType: resolvedTheme,
       stickyHeaders: true,
       loadDiffFiles,
-      enableGutterUtility: canCommentOnLines && draft === null,
-      enableLineSelection: canCommentOnLines && draft === null,
+      enableGutterUtility: canSelectLines && draft === null,
+      enableLineSelection: canSelectLines && draft === null,
       // Two gestures reach the same place: dragging the line numbers selects a range, and the
       // gutter's own button comments on the one line it sits on. They are separate callbacks in
       // the viewer, so a reader who only ever presses the button gets nothing unless both are
@@ -888,7 +933,7 @@ function PullRequestCodeTab({
       onGutterUtilityClick: beginComment,
       onLineSelectionEnd: beginComment,
     }),
-    [diffLayout, wordWrap, resolvedTheme, loadDiffFiles, canCommentOnLines, draft, beginComment],
+    [diffLayout, wordWrap, resolvedTheme, loadDiffFiles, canSelectLines, draft, beginComment],
   );
 
   const runThreadCommand = useCallback(
@@ -1002,13 +1047,43 @@ function PullRequestCodeTab({
             onRemove={() => removeComment(reviewKey, comment.id)}
           />
         ))}
-        {annotation.metadata.draft && draft ? (
+        {annotation.metadata.inlineIds.map((id) => (
+          <PullRequestInlineChat key={id} id={id} />
+        ))}
+        {annotation.metadata.draft && draft && inlineEnabled ? (
+          <PullRequestInlineChatDraft
+            rangeLabel={`${draft.path}:${getReviewPositionAnchor(draft.position).line}`}
+            commitOid={commit}
+            onCancel={() => {
+              setDraft(null);
+              setSelectedLines(null);
+            }}
+            onSubmit={(text, send) => {
+              void finishSelection(draft, text, send);
+            }}
+            onAddToReview={
+              canCommentOnLines
+                ? (body) => {
+                    addComment(reviewKey, {
+                      id: nextPendingReviewCommentId(),
+                      path: draft.path,
+                      ...(draft.oldPath === null ? {} : { oldPath: draft.oldPath }),
+                      position: draft.position,
+                      body,
+                    });
+                    setDraft(null);
+                    setSelectedLines(null);
+                  }
+                : undefined
+            }
+          />
+        ) : annotation.metadata.draft && draft ? (
           <DiffCommentAnnotation
             kind="draft"
             rangeLabel={`${draft.path}:${getReviewPositionAnchor(draft.position).line}`}
             text=""
-            submitLabel="Add to review"
-            {...(onAddToAgentSelection
+            submitLabel={canCommentOnLines ? "Add to review" : "Add to agent"}
+            {...(canCommentOnLines && onAddToAgentSelection
               ? {
                   secondaryAction: {
                     label: "Add to agent",
@@ -1024,6 +1099,14 @@ function PullRequestCodeTab({
               setSelectedLines(null);
             }}
             onComment={(body) => {
+              if (!canCommentOnLines) {
+                if (onAddToAgentSelection) {
+                  finishSelection(draft, body, (comment) =>
+                    onAddToAgentSelection({ comment, request: body }),
+                  );
+                }
+                return;
+              }
               addComment(reviewKey, {
                 id: nextPendingReviewCommentId(),
                 path: draft.path,
@@ -1040,6 +1123,9 @@ function PullRequestCodeTab({
     ),
     [
       addComment,
+      commit,
+      inlineEnabled,
+      canCommentOnLines,
       draft,
       finishSelection,
       onAddToAgentSelection,
@@ -1401,161 +1487,215 @@ function PullRequestCodeTab({
       </div>
     );
 
+  const placedInlineIds = new Set(
+    annotatedFiles.flatMap((file) =>
+      file.annotations.flatMap((annotation) => annotation.metadata.inlineIds),
+    ),
+  );
+  const offDiffDiscussions = inlineChat.discussions.filter(
+    (discussion) => !placedInlineIds.has(discussion.id),
+  );
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {toolbar}
-      {/* Above the code, closed, and counted: these belong to the change rather than to any
-            line of it, and in the stream they read as cards dropped into the patch. */}
-      {orphanFiles.size > 0 ? (
-        <div className="shrink-0 border-b border-border/60">
-          <Collapsible open={orphansOpen} onOpenChange={setOrphansOpen}>
-            {/* Still a heading, so the section keeps its place in a screen reader's outline;
-                the count is spelled out there rather than left as a bare number. */}
-            <h2>
-              <CollapsibleTrigger className="flex w-full items-center gap-1.5 px-4 py-2 text-left text-xs text-muted-foreground">
-                {/* While slices are still arriving a conversation may simply belong to a file
-                    that has not landed yet, which is not the same as being off the diff. */}
-                <span>
-                  {nextCursor === null
-                    ? "Conversations not on the current diff"
-                    : "Conversations not on the diff loaded so far"}
-                </span>
-                <ChevronRightIcon
-                  aria-hidden
-                  className={cn("size-3.5 transition-transform", orphansOpen && "rotate-90")}
-                />
-                <span aria-hidden className="tabular-nums">
-                  {orphanThreads.length}
-                </span>
-                <span className="sr-only">
-                  {orphanThreads.length === 1
-                    ? "1 conversation"
-                    : `${orphanThreads.length} conversations`}
-                </span>
-              </CollapsibleTrigger>
-            </h2>
-            <CollapsiblePanel>
-              {/* Capped: opened on a change with dozens of them, this would otherwise leave no
-                  room for the diff it sits above. */}
-              <div className="max-h-64 space-y-3 overflow-auto px-4 pb-3">
-                {[...orphanFiles].map(([path, threads]) => (
-                  <div key={path}>
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <p className="truncate px-3 text-xs text-muted-foreground">{path}</p>
-                        }
-                      />
-                      <TooltipPopup side="top">{path}</TooltipPopup>
-                    </Tooltip>
-                    <div className="mt-1 space-y-2">
-                      {threads.map((thread) => (
-                        <div key={thread.id}>
-                          {thread.line === null ? null : (
-                            <p className="px-3 text-xs text-muted-foreground">Line {thread.line}</p>
-                          )}
-                          {renderThreadCard(thread)}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
+    <InlineReviewChatContext value={inlineChat}>
+      <div className="flex h-full min-h-0 flex-col">
+        {toolbar}
+        {inlineEnabled && inlineChat.error ? (
+          <p role="alert" className="shrink-0 px-4 py-2 text-xs text-destructive">
+            {inlineChat.error}
+          </p>
+        ) : null}
+        {inlineEnabled && inlineChat.headSha && detail.headSha !== inlineChat.headSha ? (
+          <p className="shrink-0 px-4 py-2 text-xs text-muted-foreground">
+            Agent workspace: {inlineChat.headSha.slice(0, 7)}. The displayed PR has changed; start a
+            new review chat to use the updated code.
+          </p>
+        ) : null}
+        {inlineEnabled && inlineChat.hasOlder ? (
+          <div className="shrink-0 px-4 py-2">
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={inlineChat.loadingOlder}
+              onClick={inlineChat.loadOlder}
+            >
+              {inlineChat.loadingOlder ? "Loading conversations…" : "Load older conversations"}
+            </Button>
+          </div>
+        ) : null}
+        {inlineEnabled && offDiffDiscussions.length > 0 ? (
+          <details className="max-h-[45%] shrink-0 overflow-auto border-b px-4 py-2">
+            <summary className="cursor-pointer text-xs text-muted-foreground">
+              Local conversations outside this diff ({offDiffDiscussions.length})
+            </summary>
+            {offDiffDiscussions.map((discussion) => (
+              <div key={discussion.id}>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {discussion.record.filePath} ·{" "}
+                  {discussion.record.inlineConversation?.headSha.slice(0, 7)}
+                </p>
+                <PullRequestInlineChat id={discussion.id} />
               </div>
-            </CollapsiblePanel>
-          </Collapsible>
-        </div>
-      ) : null}
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        {/* Relative wrapper so the review overlay floats over the diff rather than pushing it
+            ))}
+          </details>
+        ) : null}
+        {/* Above the code, closed, and counted: these belong to the change rather than to any
+            line of it, and in the stream they read as cards dropped into the patch. */}
+        {orphanFiles.size > 0 ? (
+          <div className="shrink-0 border-b border-border/60">
+            <Collapsible open={orphansOpen} onOpenChange={setOrphansOpen}>
+              {/* Still a heading, so the section keeps its place in a screen reader's outline;
+                the count is spelled out there rather than left as a bare number. */}
+              <h2>
+                <CollapsibleTrigger className="flex w-full items-center gap-1.5 px-4 py-2 text-left text-xs text-muted-foreground">
+                  {/* While slices are still arriving a conversation may simply belong to a file
+                    that has not landed yet, which is not the same as being off the diff. */}
+                  <span>
+                    {nextCursor === null
+                      ? "Conversations not on the current diff"
+                      : "Conversations not on the diff loaded so far"}
+                  </span>
+                  <ChevronRightIcon
+                    aria-hidden
+                    className={cn("size-3.5 transition-transform", orphansOpen && "rotate-90")}
+                  />
+                  <span aria-hidden className="tabular-nums">
+                    {orphanThreads.length}
+                  </span>
+                  <span className="sr-only">
+                    {orphanThreads.length === 1
+                      ? "1 conversation"
+                      : `${orphanThreads.length} conversations`}
+                  </span>
+                </CollapsibleTrigger>
+              </h2>
+              <CollapsiblePanel>
+                {/* Capped: opened on a change with dozens of them, this would otherwise leave no
+                  room for the diff it sits above. */}
+                <div className="max-h-64 space-y-3 overflow-auto px-4 pb-3">
+                  {[...orphanFiles].map(([path, threads]) => (
+                    <div key={path}>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <p className="truncate px-3 text-xs text-muted-foreground">{path}</p>
+                          }
+                        />
+                        <TooltipPopup side="top">{path}</TooltipPopup>
+                      </Tooltip>
+                      <div className="mt-1 space-y-2">
+                        {threads.map((thread) => (
+                          <div key={thread.id}>
+                            {thread.line === null ? null : (
+                              <p className="px-3 text-xs text-muted-foreground">
+                                Line {thread.line}
+                              </p>
+                            )}
+                            {renderThreadCard(thread)}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CollapsiblePanel>
+            </Collapsible>
+          </div>
+        ) : null}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {/* Relative wrapper so the review overlay floats over the diff rather than pushing it
             up; the viewer inside still owns its own scrolling. */}
-        <div
-          className="relative min-h-0 min-w-0 flex-1"
-          // The chevron answers this too, but the whole header row is the target a reader
-          // actually aims for. The header lives in the viewer's shadow tree, so the capture
-          // listener walks `composedPath` — the only way to see through the shadow boundary.
-          onClickCapture={(event) => {
-            const composedPath = event.nativeEvent.composedPath?.() ?? [];
-            for (const node of composedPath) {
-              if (!(node instanceof HTMLElement)) continue;
-              // A control inside the header — the collapse chevron — handles itself, and
-              // this capture listener fires before its own click does. Leave it alone or
-              // the two toggles cancel out.
-              if (node instanceof HTMLButtonElement || node instanceof HTMLAnchorElement) {
-                return;
+          <div
+            className="relative min-h-0 min-w-0 flex-1"
+            // The chevron answers this too, but the whole header row is the target a reader
+            // actually aims for. The header lives in the viewer's shadow tree, so the capture
+            // listener walks `composedPath` — the only way to see through the shadow boundary.
+            onClickCapture={(event) => {
+              const composedPath = event.nativeEvent.composedPath?.() ?? [];
+              for (const node of composedPath) {
+                if (!(node instanceof HTMLElement)) continue;
+                // A control inside the header — the collapse chevron — handles itself, and
+                // this capture listener fires before its own click does. Leave it alone or
+                // the two toggles cancel out.
+                if (node instanceof HTMLButtonElement || node instanceof HTMLAnchorElement) {
+                  return;
+                }
+                // A label answers for the control it names and this listener runs before it hears
+                // anything, so stopping the press keeps the header from folding what the tick folds.
+                if (node.hasAttribute("data-viewed-toggle")) return;
+                if (node.hasAttribute("data-diffs-header")) {
+                  const filePath = node.querySelector("[data-title]")?.textContent?.trim();
+                  if (filePath === undefined || filePath === "") return;
+                  const item = items.find(
+                    (candidate) => resolveFileDiffPath(candidate.fileDiff) === filePath,
+                  );
+                  if (item !== undefined) toggleFile(item.id);
+                  return;
+                }
               }
-              // A label answers for the control it names and this listener runs before it hears
-              // anything, so stopping the press keeps the header from folding what the tick folds.
-              if (node.hasAttribute("data-viewed-toggle")) return;
-              if (node.hasAttribute("data-diffs-header")) {
-                const filePath = node.querySelector("[data-title]")?.textContent?.trim();
-                if (filePath === undefined || filePath === "") return;
-                const item = items.find(
-                  (candidate) => resolveFileDiffPath(candidate.fileDiff) === filePath,
-                );
-                if (item !== undefined) toggleFile(item.id);
-                return;
-              }
-            }
-          }}
-        >
-          {/* The viewer virtualizes against the element it is told is scrolling and places its
+            }}
+          >
+            {/* The viewer virtualizes against the element it is told is scrolling and places its
               rows absolutely, so it has to own that element — the thread diff panel hands it the
               same one. Scrolling from a parent instead leaves it painting over its neighbours. */}
-          <StyledDiffCodeView<ReviewAnnotationGroup>
-            // Keep scrollbar space stable so file metadata and line numbers do not shift as a
-            // diff crosses the overflow boundary. The viewer is itself focusable for keyboard
-            // interaction, but its native host outline clips and competes with the focus
-            // indicators on its actual controls.
-            className="h-full overflow-auto [scrollbar-gutter:stable]"
-            viewerRef={setViewer}
-            items={items}
-            selectedLines={selectedLines}
-            onSelectedLinesChange={setSelectedLines}
-            options={diffViewOptions}
-            // The viewer owns the scroll container, so the sentinel that asks for the next slice
-            // has to live inside it — at the end of the files, where reaching it means the reader
-            // is running out of diff.
-            renderCodeViewFooter={renderCodeViewFooter}
-            renderHeaderPrefix={renderHeaderPrefix}
-            renderHeaderMetadata={renderHeaderMetadata}
-            renderAnnotation={renderAnnotation}
-            unsafeCSSExtra={REPLACE_FILE_COUNTS_CSS}
-          />
-        </div>
-        {fileTreeOpen ? (
-          <aside className="flex w-[min(20rem,40%)] min-w-48 shrink-0 border-l border-border/60">
-            <DiffFileTree
-              ariaLabel={`Pull request #${detail.number} files`}
-              entries={fileTreeEntries}
-              onSelectFile={revealFile}
-              // The tree lists only what has arrived; a footer says so while the diff is still
-              // paging, and lets the reader pull the rest in without scrolling for it.
-              footer={
-                nextCursor === null ? null : (
-                  <div className="shrink-0 border-t border-border/60 p-2">
-                    <Button
-                      type="button"
-                      size="xs"
-                      variant="outline"
-                      className="w-full"
-                      disabled={diffQuery.isPending}
-                      onClick={diffQuery.error !== null ? () => diffQuery.refresh() : loadNextSlice}
-                    >
-                      {diffQuery.error !== null
-                        ? "Retry"
-                        : diffQuery.isPending
-                          ? "Loading more files..."
-                          : "Load more files"}
-                    </Button>
-                  </div>
-                )
-              }
+            <StyledDiffCodeView<ReviewAnnotationGroup>
+              // Keep scrollbar space stable so file metadata and line numbers do not shift as a
+              // diff crosses the overflow boundary. The viewer is itself focusable for keyboard
+              // interaction, but its native host outline clips and competes with the focus
+              // indicators on its actual controls.
+              className="h-full overflow-auto [scrollbar-gutter:stable]"
+              viewerRef={setViewer}
+              items={items}
+              selectedLines={selectedLines}
+              onSelectedLinesChange={setSelectedLines}
+              options={diffViewOptions}
+              // The viewer owns the scroll container, so the sentinel that asks for the next slice
+              // has to live inside it — at the end of the files, where reaching it means the reader
+              // is running out of diff.
+              renderCodeViewFooter={renderCodeViewFooter}
+              renderHeaderPrefix={renderHeaderPrefix}
+              renderHeaderMetadata={renderHeaderMetadata}
+              renderAnnotation={renderAnnotation}
+              unsafeCSSExtra={REPLACE_FILE_COUNTS_CSS}
             />
-          </aside>
-        ) : null}
+          </div>
+          {fileTreeOpen ? (
+            <aside className="flex w-[min(20rem,40%)] min-w-48 shrink-0 border-l border-border/60">
+              <DiffFileTree
+                ariaLabel={`Pull request #${detail.number} files`}
+                entries={fileTreeEntries}
+                onSelectFile={revealFile}
+                // The tree lists only what has arrived; a footer says so while the diff is still
+                // paging, and lets the reader pull the rest in without scrolling for it.
+                footer={
+                  nextCursor === null ? null : (
+                    <div className="shrink-0 border-t border-border/60 p-2">
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="outline"
+                        className="w-full"
+                        disabled={diffQuery.isPending}
+                        onClick={
+                          diffQuery.error !== null ? () => diffQuery.refresh() : loadNextSlice
+                        }
+                      >
+                        {diffQuery.error !== null
+                          ? "Retry"
+                          : diffQuery.isPending
+                            ? "Loading more files..."
+                            : "Load more files"}
+                      </Button>
+                    </div>
+                  )
+                }
+              />
+            </aside>
+          ) : null}
+        </div>
+        {unstructured}
       </div>
-      {unstructured}
-    </div>
+    </InlineReviewChatContext>
   );
 }
 

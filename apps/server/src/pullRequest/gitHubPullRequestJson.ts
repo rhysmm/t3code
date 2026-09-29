@@ -216,7 +216,14 @@ const RawSearchItemSchema = Schema.Struct({
 const RawSearchSchema = Schema.Struct({
   data: Schema.Struct({
     search: Schema.Struct({
-      pageInfo: Schema.optional(Schema.NullOr(Schema.Struct({ hasNextPage: Schema.Boolean }))),
+      pageInfo: Schema.optional(
+        Schema.NullOr(
+          Schema.Struct({
+            hasNextPage: Schema.Boolean,
+            endCursor: Schema.optional(Schema.NullOr(Schema.String)),
+          }),
+        ),
+      ),
       // Row by row, like the listing's own: a node that is not a pull request — or one field
       // GitHub changes — is skipped rather than blanking every repository at once.
       nodes: Schema.optional(Schema.NullOr(Schema.Array(Schema.Unknown))),
@@ -805,9 +812,9 @@ export const PULL_REQUEST_SEARCH_MAX_ROWS = GRAPHQL_PAGE_SIZE;
  * is already past what a row can say.
  */
 export function pullRequestSearchGraphQlQuery(rows: number, includeStacks = false): string {
-  return `query($q: String!) {
-  search(query: $q, type: ISSUE, first: ${Math.min(Math.max(Math.trunc(rows), 1), PULL_REQUEST_SEARCH_MAX_ROWS)}) {
-    pageInfo { hasNextPage }
+  return `query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: ${Math.min(Math.max(Math.trunc(rows), 1), PULL_REQUEST_SEARCH_MAX_ROWS)}, after: $after) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
         ${includeStacks ? "stack { number size baseRefName } stackEntry { position }" : ""}
@@ -1681,6 +1688,7 @@ export interface GitHubPullRequestSearchItem extends GitHubPullRequestListItem {
 }
 
 export interface GitHubPullRequestSearchBatch {
+  readonly endCursor: string | null;
   readonly items: ReadonlyArray<GitHubPullRequestSearchItem>;
   /** Rows the search returned, counted before decoding, so a skipped row cannot hide a next page. */
   readonly rawCount: number;
@@ -1737,6 +1745,7 @@ export function decodePullRequestSearchJson(
   return Result.succeed({
     items,
     rawCount: nodes.length,
+    endCursor: decoded.success.data.search.pageInfo?.endCursor ?? null,
     hasNextPage: decoded.success.data.search.pageInfo?.hasNextPage ?? false,
   });
 }

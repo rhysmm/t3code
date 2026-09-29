@@ -46,7 +46,7 @@ const GitPrStepStatus = Schema.Literals(["created", "opened_existing", "skipped_
 const VcsStatusChangeRequestState = Schema.Literals(["open", "closed", "merged"]);
 const GitPullRequestReference = TrimmedNonEmptyStringSchema;
 const GitPullRequestState = Schema.Literals(["open", "closed", "merged"]);
-const GitPreparePullRequestThreadMode = Schema.Literals(["local", "worktree"]);
+const GitPreparePullRequestThreadMode = Schema.Literals(["local", "worktree", "review"]);
 export const GitRunStackedActionToastRunAction = Schema.Struct({
   kind: GitStackedAction,
 });
@@ -153,6 +153,7 @@ export const GitPullRequestRefInput = Schema.Struct({
 export type GitPullRequestRefInput = typeof GitPullRequestRefInput.Type;
 
 export const GitPreparePullRequestThreadInput = Schema.Struct({
+  expectedHeadSha: Schema.optional(TrimmedNonEmptyStringSchema),
   cwd: TrimmedNonEmptyStringSchema,
   reference: GitPullRequestReference,
   mode: GitPreparePullRequestThreadMode,
@@ -284,6 +285,8 @@ export const GitResolvePullRequestResult = Schema.Struct({
 export type GitResolvePullRequestResult = typeof GitResolvePullRequestResult.Type;
 
 export const GitPreparePullRequestThreadResult = Schema.Struct({
+  workspaceRoot: Schema.optional(TrimmedNonEmptyStringSchema),
+  headSha: Schema.optional(TrimmedNonEmptyStringSchema),
   pullRequest: GitResolvedPullRequest,
   branch: TrimmedNonEmptyStringSchema,
   worktreePath: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),

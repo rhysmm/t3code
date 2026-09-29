@@ -59,6 +59,7 @@ function ThreadQueueSender({ threadKey }: { threadKey: string }) {
     (state) => state.lastDispatchByThreadKey[threadKey]?.thread ?? null,
   );
   const latestUserMessageId = thread?.messages.findLast((m) => m.role === "user")?.id ?? null;
+  const startFailureId = latestTurnStartFailureId(thread ?? undefined, latestUserMessageId);
   const waitingForServer =
     lastDispatch !== null &&
     !hasServerAcknowledgedLocalDispatch({
@@ -69,9 +70,19 @@ function ThreadQueueSender({ threadKey }: { threadKey: string }) {
       session: thread?.session ?? null,
       hasPendingApproval: pendingRequests.approvals.length > 0,
       hasPendingUserInput: pendingRequests.userInputs.length > 0,
-      latestTurnStartFailureId: latestTurnStartFailureId(thread ?? undefined, latestUserMessageId),
+      latestTurnStartFailureId: startFailureId,
       threadError: null,
     });
+  const waitingForPreviousAnswer =
+    next?.waitForTurnEnd === true &&
+    lastDispatch !== null &&
+    !(
+      (thread?.latestTurn !== null &&
+        thread?.latestTurn !== undefined &&
+        thread.latestTurn.turnId !== lastDispatch.latestTurnTurnId &&
+        thread.latestTurn.state !== "running") ||
+      (startFailureId !== null && startFailureId !== lastDispatch.latestTurnStartFailureId)
+    );
 
   // Approvals and questions block the agent; a steer landing on top of them
   // would answer nothing and confuse the turn, so the queue holds until the
@@ -85,6 +96,8 @@ function ThreadQueueSender({ threadKey }: { threadKey: string }) {
     rewinding ||
     sending ||
     waitingForServer ||
+    waitingForPreviousAnswer ||
+    (next?.waitForTurnEnd === true && thread?.latestTurn?.state === "running") ||
     pendingRequests.approvals.length > 0 ||
     pendingRequests.userInputs.length > 0;
   const due =

@@ -183,6 +183,30 @@ export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | 
   return appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
 }
 
+export function waitForThreadShell(
+  ref: ScopedThreadRef,
+  timeoutMs = 10_000,
+): Promise<EnvironmentThreadShell> {
+  const current = readThreadShell(ref);
+  if (current !== null) return Promise.resolve(current);
+
+  return new Promise((resolve, reject) => {
+    let unsubscribe: (() => void) | null = null;
+    const timeout = setTimeout(() => {
+      unsubscribe?.();
+      reject(new Error("The PR question thread did not appear."));
+    }, timeoutMs);
+    const finish = (shell: EnvironmentThreadShell | null) => {
+      if (shell === null) return;
+      clearTimeout(timeout);
+      unsubscribe?.();
+      resolve(shell);
+    };
+    unsubscribe = appAtomRegistry.subscribe(environmentThreadShells.threadShellAtom(ref), finish);
+    finish(readThreadShell(ref));
+  });
+}
+
 /** The thread as `useThread` returns it, read outside React. */
 export function readThread(ref: ScopedThreadRef): EnvironmentThread | null {
   return mergeEnvironmentThread(

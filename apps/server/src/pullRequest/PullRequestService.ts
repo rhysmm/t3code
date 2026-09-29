@@ -1132,7 +1132,8 @@ export const make = Effect.gen(function* () {
       // Refused whole rather than per repository: a cursor is only ever a value this service
       // issued, so one that does not read as one means the page is sending something it made up,
       // and reading part of the listing under that assumption would quietly lose rows.
-      const continuation = yield* decodeCursors(input.cursors);
+      const account = input.scope === "account" && input.projectId === undefined;
+      const continuation = account ? null : yield* decodeCursors(input.cursors);
       const {
         supported: projects,
         unimplemented,
@@ -1171,6 +1172,121 @@ export const make = Effect.gen(function* () {
           detail: "This host cannot be browsed here yet.",
         })),
       ];
+
+      if (account) {
+        const hosts = [
+          ...new Map(
+            projects
+              .filter((project) => project.api.kind === "github")
+              .map((project) => [project.host, project]),
+          ).values(),
+        ];
+        const batches = yield* Effect.forEach(
+          hosts,
+          (project) =>
+            Effect.gen(function* () {
+              const key = `account:${project.host}`;
+              const viewer = viewers[project.host];
+              if (input.cursors && input.cursors[key] === undefined)
+                return { entries: [], errors: [], nextCursors: {} };
+              if (!viewer || !project.api.listChangeRequestsAcross) {
+                return {
+                  entries: [],
+                  errors: [
+                    {
+                      projectId: project.project.id,
+                      projectTitle: project.project.title,
+                      message: `Sign in to ${project.host} with gh to load review requests.`,
+                    },
+                  ],
+                  nextCursors: {},
+                };
+              }
+              const batch = yield* project.api.listChangeRequestsAcross({
+                cwd: project.project.workspaceRoot,
+                host: project.host,
+                repositories: [],
+                account: true,
+                after: input.cursors?.[key],
+                state: input.state,
+                involvement,
+                viewer,
+                limit: Math.min(input.limit ?? DEFAULT_REPOSITORY_LIST_LIMIT, 100),
+                query: input.query,
+                filters: input.filters,
+              });
+              const observedAt = yield* Clock.currentTimeMillis;
+              return {
+                entries: batch.items.map((item) => {
+                  const local = projects.find(
+                    (candidate) =>
+                      candidate.host === project.host &&
+                      candidate.repository.toLowerCase() === item.repository.toLowerCase(),
+                  );
+                  return {
+                    ...toEntry({
+                      project: local ?? { ...project, repository: item.repository },
+                      item,
+                      viewer,
+                      observedAt,
+                    }),
+                    ...(involvement === "reviewing" ? { viewerReviewRequested: true } : {}),
+                  };
+                }),
+                errors: [],
+                nextCursors: batch.nextCursor ? { [key]: batch.nextCursor } : {},
+              };
+            }).pipe(
+              Effect.catch((error) =>
+                Effect.succeed({
+                  entries: [],
+                  errors: [
+                    {
+                      projectId: project.project.id,
+                      projectTitle: project.project.title,
+                      message: providerDetail(error),
+                    },
+                  ],
+                  nextCursors: {},
+                }),
+              ),
+            ),
+          { concurrency: REPOSITORY_CONCURRENCY },
+        );
+        // Other providers keep their existing project-scoped inbox alongside GitHub's account search.
+        const otherProjects = projects.filter((project) => project.api.kind !== "github");
+        const otherCursors =
+          input.cursors === undefined
+            ? undefined
+            : Object.fromEntries(
+                Object.entries(input.cursors).filter(([key]) => !key.startsWith("account:")),
+              );
+        const other =
+          otherProjects.length > 0 &&
+          (otherCursors === undefined || Object.keys(otherCursors).length > 0)
+            ? yield* listUncached({
+                ...input,
+                scope: "projects",
+                projectIds: otherProjects.map((project) => project.project.id),
+                ...(otherCursors === undefined ? {} : { cursors: otherCursors }),
+              })
+            : null;
+        const nextCursors: Record<string, string> = Object.assign(
+          {},
+          other?.nextCursors,
+          ...batches.map((batch) => batch.nextCursors),
+        );
+        return {
+          viewers: viewers as PullRequestListResult["viewers"],
+          providers,
+          entries: [...batches.flatMap((batch) => batch.entries), ...(other?.entries ?? [])].sort(
+            (a, b) => b.updatedAt.localeCompare(a.updatedAt),
+          ),
+          errors: [...batches.flatMap((batch) => batch.errors), ...(other?.errors ?? [])],
+          truncated: Object.keys(nextCursors).length > 0 || other?.truncated === true,
+          nextCursors,
+        };
+      }
 
       // A continued listing reads only the repositories it was asked to carry on with: every
       // other one is already on the page, and reading it again is the whole cost this is here to
@@ -1652,6 +1768,7 @@ export const make = Effect.gen(function* () {
           { concurrency: 2 },
         ).pipe(
           Effect.map(([{ value: changeRequest, observedAt }, viewer]): PullRequestDetail => ({
+            ...(changeRequest.headSha === undefined ? {} : { headSha: changeRequest.headSha }),
             provider: project.api.kind,
             capabilities: project.api.capabilities,
             projectId: project.project.id,
@@ -2799,6 +2916,7 @@ export const make = Effect.gen(function* () {
         limit,
         query,
         cursorEntries,
+        scope,
       ] = JSON.parse(key) as [
         number,
         string,
@@ -2810,6 +2928,7 @@ export const make = Effect.gen(function* () {
         number | null,
         string | null,
         ReadonlyArray<[string, string]> | null,
+        PullRequestListInput["scope"] | null,
       ];
       return listUncached({
         state,
@@ -2821,6 +2940,7 @@ export const make = Effect.gen(function* () {
         ...(limit === null ? {} : { limit }),
         ...(query === null ? {} : { query }),
         ...(cursorEntries === null ? {} : { cursors: Object.fromEntries(cursorEntries) }),
+        ...(scope === null ? {} : { scope }),
       } as PullRequestListInput);
     },
     {
@@ -2853,6 +2973,7 @@ export const make = Effect.gen(function* () {
       input.cursors === undefined
         ? null
         : Object.entries(input.cursors).toSorted(([left], [right]) => left.localeCompare(right)),
+      input.scope ?? null,
     ]);
     return Cache.get(listCache, key);
   };

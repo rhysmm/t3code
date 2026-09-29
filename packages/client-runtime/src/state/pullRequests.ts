@@ -246,6 +246,8 @@ export function createPullRequestEnvironmentAtoms<R, E>(
     diff: createEnvironmentQueryAtomFamily(runtime, {
       label: "environment-data:pull-requests:diff",
       staleTimeMs: 60_000,
+      // Reopening a recent review can show its patch while a stale read revalidates.
+      idleTtlMs: 15 * 60_000,
       execute: (input: PullRequestDiffInput) =>
         Effect.gen(function* () {
           const supervisor = yield* EnvironmentSupervisor;

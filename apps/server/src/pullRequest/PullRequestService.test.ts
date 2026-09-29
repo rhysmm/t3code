@@ -116,6 +116,68 @@ function hostedChangeRequest(body: string, additions = 1) {
   };
 }
 
+it.effect(
+  "lists account review requests from unadded repositories and continues across equal PR numbers",
+  () =>
+    Effect.gen(function* () {
+      const calls: Array<{
+        account?: boolean | undefined;
+        after?: string | undefined;
+        repositories: ReadonlyArray<string>;
+      }> = [];
+      const service = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "local", workspaceRoot: "/w", repository: "acme/local" }),
+        ],
+        providers: [
+          fakeProvider("github", {
+            listChangeRequestsAcross: (input) => {
+              calls.push(input);
+              return Effect.succeed({
+                items: [
+                  {
+                    ...changeRequest(7, "2026-07-02T00:00:00Z"),
+                    repository: input.after ? "external/second" : "external/first",
+                    reviewRequestLogins: ["bilal"],
+                  },
+                ],
+                truncated: !input.after,
+                nextCursor: input.after ? undefined : "opaque-next-page",
+              });
+            },
+          }),
+        ],
+      });
+      const input = {
+        scope: "account",
+        state: "open",
+        involvement: "reviewing",
+        limit: 1,
+      } as const;
+      const first = yield* service.list(input);
+      const second = yield* service.list({ ...input, cursors: first.nextCursors });
+      assert.deepStrictEqual(
+        first.entries.map((entry) => [entry.repository, entry.number, entry.projectId]),
+        [["external/first", 7, "p1"]],
+      );
+      assert.deepStrictEqual(
+        second.entries.map((entry) => [entry.repository, entry.number]),
+        [["external/second", 7]],
+      );
+      assert.isTrue(first.entries[0]!.viewerReviewRequested);
+      assert.isFalse(second.truncated);
+      assert.deepStrictEqual(
+        calls.map((call) => [call.account, call.after, call.repositories]),
+        [
+          [true, undefined, []],
+          [true, "opaque-next-page", []],
+        ],
+      );
+      const projectList = yield* service.list({ ...input, scope: "projects" });
+      assert.deepStrictEqual(projectList.entries, []);
+    }),
+);
+
 it.effect("caches narrow previews and invalidates them after refresh or mutation", () =>
   Effect.gen(function* () {
     let reads = 0;

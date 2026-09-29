@@ -17,6 +17,7 @@ import {
   ThreadLinkedPullRequest,
   ThreadTitleState,
   ThreadId,
+  ThreadPurpose,
   TurnId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -30,6 +31,7 @@ export const ProjectionThread = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   title: Schema.String,
+  purpose: Schema.optional(ThreadPurpose),
   titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,

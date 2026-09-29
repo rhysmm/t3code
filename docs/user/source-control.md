@@ -105,6 +105,25 @@ Open **Pull requests** to review changes and comments, request reviewers, check 
 or merge. You can edit review titles and descriptions and your own comments where the host allows it.
 GitLab calls these merge requests.
 
+On web and desktop, **Reviewing** includes GitHub review requests from repositories you have not
+added as projects. Sign in with `gh` on your connected environment and add a project on that GitHub
+host to provide the connection.
+
+In the **Code** tab, select lines or use the line's **+** button, then choose **Ask agent**.
+Each question and answer stays beneath its selected code. You can ask more questions while the
+agent works; they queue and receive answers one at a time. PR questions stay out of the chat
+sidebar and are only visible in T3. **Add to review** is a separate GitHub action. Older questions
+remain accessible when the displayed diff changes. **Ask a question** opens a full review chat
+beside the diff when you need a longer conversation.
+Keep the app open until queued questions are sent.
+
+The first question prepares an isolated review workspace; your existing checkout
+and local changes stay in place. Repositories you have not added are cloned when needed. Review
+workspaces do not run project setup scripts automatically. Questions remain with the pull request
+when you reopen it. Refreshing the GitHub diff does not update the workspace used for earlier
+questions. To review an updated head in a fresh workspace, refresh the pull request and choose
+**Start a new review chat** from its actions menu.
+
 GitHub, GitLab, and Azure DevOps support auto-merge while checks are outstanding. GitHub also
 supports approving waiting fork workflows and opening a revert pull request for a merged change.
 

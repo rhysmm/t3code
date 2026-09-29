@@ -50,7 +50,11 @@ function IndexDraftLanding() {
   const mostRecentProject = useMemo(
     () =>
       bootstrapped
-        ? (sortScopedProjectsForSidebar(projects, threads, "updated_at")[0] ?? null)
+        ? (sortScopedProjectsForSidebar(
+            projects,
+            threads.filter((thread) => thread.purpose !== "pr-questions"),
+            "updated_at",
+          )[0] ?? null)
         : null,
     [bootstrapped, projects, threads],
   );

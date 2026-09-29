@@ -89,6 +89,7 @@ export function sortHomeProjectScopes(input: {
   };
 
   for (const thread of input.threads) {
+    if (thread.purpose === "pr-questions") continue;
     if (thread.archivedAt !== null) continue;
     recordActivity(
       scopeKeyByProjectRef.get(scopedProjectKey(thread.environmentId, thread.projectId)),

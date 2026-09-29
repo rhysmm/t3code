@@ -446,6 +446,7 @@ class PullRequestSummaryRead extends Request.Class<
 > {}
 
 export interface GitHubPullRequestSearchBatch {
+  readonly nextCursor?: string | undefined;
   /** Rows across every repository asked for, newest update first, each naming its own. */
   readonly items: ReadonlyArray<GitHubPullRequestSearchItem>;
   readonly truncated: boolean;
@@ -512,6 +513,8 @@ export class GitHubPullRequestCli extends Context.Service<
      * the newest rows of the lot, which is exactly the page.
      */
     readonly searchPullRequests: (input: {
+      readonly account?: boolean | undefined;
+      readonly after?: string | undefined;
       /** Any checkout on the host; the search names its repositories itself. */
       readonly cwd: string;
       readonly host: string;
@@ -1013,6 +1016,7 @@ const SEARCH_REPOSITORY = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
  * GitHub might still read.
  */
 function searchQuery(input: {
+  readonly account?: boolean | undefined;
   readonly repositories: ReadonlyArray<string>;
   readonly state: PullRequestListState;
   readonly involvement: PullRequestInvolvement;
@@ -1021,7 +1025,7 @@ function searchQuery(input: {
   readonly cursor?: ProviderListCursor | undefined;
   readonly filters?: PullRequestListFilters | undefined;
 }): string | null {
-  if (input.repositories.length === 0) return null;
+  if (input.repositories.length === 0 && !input.account) return null;
   const repositories = input.repositories.map((repository) => repository.trim());
   if (!repositories.every((repository) => SEARCH_REPOSITORY.test(repository))) return null;
   const query = input.query?.trim() ?? "";
@@ -2028,19 +2032,22 @@ export const make = Effect.gen(function* () {
       // One extra row reveals that the host has more than the slice shows, the way the
       // per-repository read does — up to GitHub's own ceiling on a search page, past which
       // `hasNextPage` is what says there is more.
-      const rows = Math.min(input.limit + 1, PULL_REQUEST_SEARCH_MAX_ROWS);
+      const rows = Math.min(input.limit + (input.account ? 0 : 1), PULL_REQUEST_SEARCH_MAX_ROWS);
       return graphqlRead({
         cwd: input.cwd,
         host: input.host,
         operation: "searchPullRequests",
         // The reader's own words are in the query, so it travels over stdin rather than in argv.
-        privateVariables: { q: query },
+        privateVariables: { q: query, ...(input.after ? { after: input.after } : {}) },
         query: pullRequestSearchGraphQlQuery(rows, input.host === "github.com"),
         decode: decodePullRequestSearchJson,
       }).pipe(
         Effect.map((batch) => ({
           items: batch.items.slice(0, input.limit),
           truncated: batch.rawCount > input.limit || batch.hasNextPage,
+          ...(input.account && batch.hasNextPage && batch.endCursor
+            ? { nextCursor: batch.endCursor }
+            : {}),
         })),
       );
     },

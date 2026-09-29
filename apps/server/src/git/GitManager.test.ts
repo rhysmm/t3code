@@ -72,6 +72,7 @@ interface FakeGhScenario {
     headRepositoryOwnerLogin?: string | null;
   };
   repositoryCloneUrls?: Record<string, { url: string; sshUrl: string }>;
+  repoCloneSource?: string;
   failWith?: GitHubCli.GitHubCliError;
   /** Let this many gh calls succeed before failWith kicks in (default 0 = fail immediately). */
   failAfterCalls?: number;
@@ -382,6 +383,13 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
       return Effect.fail(scenario.failWith);
     }
 
+    if (args[0] === "repo" && args[1] === "clone" && scenario.repoCloneSource) {
+      return Effect.sync(() => {
+        runGitSyncForFakeGh(input.cwd, ["clone", scenario.repoCloneSource!, args[3]!]);
+        return fakeGhOutput("");
+      });
+    }
+
     if (args[0] === "pr" && args[1] === "list") {
       const headSelectorIndex = args.findIndex((value) => value === "--head");
       const headSelector =
@@ -690,6 +698,7 @@ function makeManager(input?: {
   );
 
   const managerLayer = Layer.mergeAll(
+    Layer.succeed(GitHubCli.GitHubCli, gitHubCli),
     Layer.succeed(TextGeneration.TextGeneration, textGeneration),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
       getProviders: Effect.succeed([]),
@@ -5705,6 +5714,99 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       );
 
       expect(errorMessage).toContain("already checked out in the main repo");
+    }),
+  );
+
+  it.effect("isolates review workspaces while preserving the main checkout and skips setup", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const repoDir = yield* makeTempDir("t3code-review-");
+      yield* initRepo(repoDir);
+      const url = "https://github.com/acme/review.git";
+      yield* runGit(repoDir, ["remote", "add", "origin", url]);
+      yield* runGit(repoDir, ["config", `url.${repoDir}.insteadOf`, url]);
+      yield* runGit(repoDir, ["update-ref", "refs/pull/79/head", "HEAD"]);
+      const headSha = (yield* runGit(repoDir, ["rev-parse", "HEAD"])).stdout.trim();
+      yield* fs.writeFileString(NodePath.join(repoDir, "staged.txt"), "staged\n");
+      yield* runGit(repoDir, ["add", "staged.txt"]);
+      yield* fs.writeFileString(NodePath.join(repoDir, "staged.txt"), "unstaged\n");
+      yield* fs.writeFileString(NodePath.join(repoDir, "untracked.txt"), "keep me\n");
+      const before = (yield* runGit(repoDir, ["status", "--porcelain=v1"])).stdout;
+      const index = (yield* runGit(repoDir, ["diff", "--cached"])).stdout;
+      const config = yield* fs.readFileString(NodePath.join(repoDir, ".git", "config"));
+      const { manager } = yield* makeManager({
+        setupScriptRunner: { runForThread: () => Effect.die("Review must not run setup") },
+        ghScenario: {
+          pullRequest: {
+            number: 79,
+            title: "Review",
+            url: "https://github.com/acme/review/pull/79",
+            baseRefName: "main",
+            headRefName: "main",
+            state: "open",
+          },
+        },
+      });
+      const input = {
+        cwd: repoDir,
+        reference: "https://github.com/acme/review/pull/79",
+        mode: "review",
+        expectedHeadSha: headSha,
+        threadId: asThreadId("review-thread"),
+      } as const;
+      const first = yield* preparePullRequestThread(manager, input);
+      const second = yield* preparePullRequestThread(manager, input);
+      expect(first.worktreePath).not.toBe(second.worktreePath);
+      expect(first.branch).toMatch(/^t3code\/review-79-/);
+      expect(yield* fs.readFileString(NodePath.join(repoDir, ".git", "config"))).toBe(config);
+      expect((yield* runGit(first.worktreePath!, ["rev-parse", "HEAD"])).stdout.trim()).toBe(
+        headSha,
+      );
+      expect((yield* runGit(repoDir, ["status", "--porcelain=v1"])).stdout).toBe(before);
+      expect((yield* runGit(repoDir, ["diff", "--cached"])).stdout).toBe(index);
+      expect((yield* runGit(repoDir, ["branch", "--show-current"])).stdout.trim()).toBe("main");
+      expect(yield* fs.readFileString(NodePath.join(repoDir, "untracked.txt"))).toBe("keep me\n");
+      const changed = yield* preparePullRequestThread(manager, {
+        ...input,
+        expectedHeadSha: "0".repeat(40),
+      }).pipe(Effect.flip);
+      expect(changed.message).toContain("Refresh the review");
+    }),
+  );
+
+  it.effect("clones an unadded review repository through gh before creating its workspace", () =>
+    Effect.gen(function* () {
+      const local = yield* makeTempDir("t3code-review-local-");
+      const remote = yield* makeTempDir("t3code-review-remote-");
+      yield* initRepo(local);
+      yield* initRepo(remote);
+      yield* runGit(remote, ["update-ref", "refs/pull/79/head", "HEAD"]);
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          repoCloneSource: remote,
+          pullRequest: {
+            number: 79,
+            title: "External",
+            url: "https://github.com/acme/external/pull/79",
+            baseRefName: "main",
+            headRefName: "feature",
+            state: "open",
+          },
+        },
+      });
+      const result = yield* preparePullRequestThread(manager, {
+        cwd: local,
+        reference: "https://github.com/acme/external/pull/79",
+        mode: "review",
+      });
+      expect(
+        ghCalls.some((call) => call.startsWith("repo clone https://github.com/acme/external.git ")),
+      ).toBe(true);
+      expect(result.workspaceRoot).not.toBe(local);
+      expect(result.worktreePath).not.toBe(result.workspaceRoot);
+      expect((yield* runGit(local, ["worktree", "list", "--porcelain"])).stdout).not.toContain(
+        result.branch,
+      );
     }),
   );
 

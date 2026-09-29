@@ -4,6 +4,8 @@ import type {
   PreviewAnnotationPayload,
   ProviderInteractionMode,
   RuntimeMode,
+  ReviewCommentContextRecord,
+  MessageId,
 } from "@t3tools/contracts";
 import { create } from "zustand";
 
@@ -40,6 +42,14 @@ export interface QueuedComposerMessage {
   terminalContexts: TerminalContextDraft[];
   previewAnnotations: PreviewAnnotationPayload[];
   reviewComments: ReviewCommentContext[];
+  /** A PR question uses the same turn queue but stays anchored to its diff line. */
+  inlineReview?: {
+    record: ReviewCommentContextRecord;
+    messageId: MessageId;
+    detailUrl: string;
+  };
+  /** PR answers must finish before the next question starts. */
+  waitForTurnEnd?: boolean;
   sendSettings: QueuedMessageSendSettings;
   /**
    * The newest completed tool activity at queue time. A different id later
@@ -248,16 +258,21 @@ export function latestCompletedToolActivityId(
 }
 
 /**
- * A queued message is due mid-turn once a tool call finished after it was
- * queued, and as soon as the turn is over otherwise. "connecting" is the gap
- * between a send and the provider picking it up, so nothing is due there.
+ * Composer messages can leave at tool boundaries. PR questions wait until the
+ * turn ends; the sender also fences them behind the prior dispatched answer.
+ * "connecting" is the gap between a send and the provider picking it up.
  */
 export function isQueuedMessageDue(input: {
-  message: Pick<QueuedComposerMessage, "queuedAfterToolActivityId" | "holdUntilUserAction">;
+  message: Pick<
+    QueuedComposerMessage,
+    "queuedAfterToolActivityId" | "holdUntilUserAction" | "waitForTurnEnd"
+  >;
   phase: "connecting" | "running" | "ready" | "disconnected";
   latestToolActivityId: string | null;
 }): boolean {
   if (input.message.holdUntilUserAction) return false;
+  if (input.message.waitForTurnEnd)
+    return input.phase !== "running" && input.phase !== "connecting";
   if (input.phase === "connecting") return false;
   if (input.phase !== "running") return true;
   return input.latestToolActivityId !== input.message.queuedAfterToolActivityId;

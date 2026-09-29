@@ -1232,7 +1232,10 @@ describe("remembered pull request list controls", () => {
   it("falls back to the default controls when storage is corrupt", () => {
     const storage = makeStorage();
     storage.setItem("t3.pullRequests.preferences", "{not json");
-    expect(readPullRequestListPreferences(storage)).toEqual({ involvement: "all", state: "open" });
+    expect(readPullRequestListPreferences(storage)).toEqual({
+      involvement: "reviewing",
+      state: "open",
+    });
   });
 
   it("falls back when browser policy denies storage", () => {
@@ -1244,7 +1247,10 @@ describe("remembered pull request list controls", () => {
         throw new Error("storage denied");
       },
     };
-    expect(readPullRequestListPreferences(denied)).toEqual({ involvement: "all", state: "open" });
+    expect(readPullRequestListPreferences(denied)).toEqual({
+      involvement: "reviewing",
+      state: "open",
+    });
     expect(() =>
       writePullRequestListPreferences({ involvement: "all", state: "open" }, denied),
     ).not.toThrow();

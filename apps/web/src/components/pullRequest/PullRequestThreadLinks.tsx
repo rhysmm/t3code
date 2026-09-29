@@ -199,6 +199,7 @@ function ThreadPicker({
       (thread) =>
         thread.environmentId === environmentId &&
         thread.archivedAt === null &&
+        thread.purpose !== "pr-questions" &&
         `${thread.title} ${projectNames.get(thread.projectId) ?? ""}`
           .toLocaleLowerCase()
           .includes(search),

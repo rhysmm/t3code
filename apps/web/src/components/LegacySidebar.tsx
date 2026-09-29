@@ -1257,7 +1257,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const sidebarThreads = useMemo(
     () =>
       allSidebarThreads.filter(
-        (thread) => !isInlineNoteThread(inlineNoteThreadKeys, thread.environmentId, thread.id),
+        (thread) =>
+          thread.purpose !== "pr-questions" &&
+          !isInlineNoteThread(inlineNoteThreadKeys, thread.environmentId, thread.id),
       ),
     [allSidebarThreads, inlineNoteThreadKeys],
   );
@@ -3140,7 +3142,9 @@ export default function LegacySidebar() {
   const sidebarThreads = useMemo(
     () =>
       allSidebarThreads.filter(
-        (thread) => !isInlineNoteThread(inlineNoteThreadKeys, thread.environmentId, thread.id),
+        (thread) =>
+          thread.purpose !== "pr-questions" &&
+          !isInlineNoteThread(inlineNoteThreadKeys, thread.environmentId, thread.id),
       ),
     [allSidebarThreads, inlineNoteThreadKeys],
   );

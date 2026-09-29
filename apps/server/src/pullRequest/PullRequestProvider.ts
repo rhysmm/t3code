@@ -193,6 +193,7 @@ export interface ProviderBatchedChangeRequest extends ProviderChangeRequest {
  * oldest row in the slice, which every repository the slice covers is now read up to.
  */
 export interface ProviderBatchedChangeRequestPage {
+  readonly nextCursor?: string | undefined;
   readonly items: ReadonlyArray<ProviderBatchedChangeRequest>;
   /** True when the host has more rows than the slice asked for, for any of the repositories. */
   readonly truncated: boolean;
@@ -207,6 +208,7 @@ export interface ProviderChangeRequestStat {
 }
 
 export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
+  readonly headSha?: string | null;
   readonly body: string;
   readonly changedFiles: number;
   readonly mergedAt: string | null;
@@ -370,6 +372,8 @@ export interface PullRequestProviderApi {
    * boundaries asks in groups rather than in one call.
    */
   readonly listChangeRequestsAcross?: (input: {
+    readonly account?: boolean | undefined;
+    readonly after?: string | undefined;
     /** Any checkout on the host, which is what the tool is run in. */
     readonly cwd: string;
     readonly host: string;

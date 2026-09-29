@@ -12,6 +12,7 @@ import {
   type PullRequestListEntry,
   type PullRequestUpdateMethod,
   type PullRequestRef,
+  type PullRequestDetail,
   resolveEnvironmentMachineKind,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -428,7 +429,9 @@ export function PullRequestDetailPanel({
   composerDraftTarget,
   onBack,
   onSelectPullRequest,
+  onAskAgent,
 }: {
+  onAskAgent?: (detail: PullRequestDetail, newConversation?: boolean) => Promise<ScopedThreadRef>;
   environmentId: EnvironmentId;
   shortcutsEnabled: boolean;
   getShortcutContext: () => ShortcutMatchContext;
@@ -531,7 +534,7 @@ export function PullRequestDetailPanel({
     key: tabScopeKey,
     tabs: new Set<DetailTab>(["summary"]),
   }));
-  // A previously visited Code tab must not fetch diffs for every later PR while hidden.
+  // Visiting Code on one PR must not mount the hidden diff viewer for every later PR.
   const mountedTabs =
     tabMountState.key === tabScopeKey ? tabMountState.tabs : new Set<DetailTab>([tab]);
   useEffect(() => {
@@ -819,6 +822,20 @@ export function PullRequestDetailPanel({
   }, [activityQuery.refresh, detailQuery.refresh, nativeStackQuery.refresh]);
   const [refreshToken, setRefreshToken] = useState(0);
   const codeRefreshToken = refreshToken + (turnRefresh ?? 0);
+  // Start the first page alongside the summary without mounting the diff viewer or its workers.
+  const { refresh: refreshPrefetchedDiff } = useEnvironmentQuery(
+    coreDetail?.capabilities.diff
+      ? pullRequestEnvironment.diff({ environmentId, input: reference })
+      : null,
+  );
+  const prefetchedDiffRefresh = useRef({ key: tabScopeKey, token: codeRefreshToken });
+  useEffect(() => {
+    const previous = prefetchedDiffRefresh.current;
+    prefetchedDiffRefresh.current = { key: tabScopeKey, token: codeRefreshToken };
+    if (previous.key === tabScopeKey && previous.token !== codeRefreshToken) {
+      refreshPrefetchedDiff();
+    }
+  }, [codeRefreshToken, refreshPrefetchedDiff, tabScopeKey]);
   const activityRevision = useRef<{ readonly key: string; readonly updatedAt: string } | null>(
     null,
   );
@@ -1137,8 +1154,43 @@ export function PullRequestDetailPanel({
   };
 
   /** A question about the change, which needs a thread and nothing else. */
-  const startAsk = async (kind: string, task: ThreadTask) => {
+  const startAsk = async (kind: string, task: ThreadTask, newConversation = false) => {
     if (!detail || handoff !== null) return;
+    if (onAskAgent && detail.provider === "github") {
+      setHandoff(kind);
+      const toastId =
+        attachTarget === null || newConversation
+          ? toastManager.add({ type: "loading", title: "Preparing review workspace..." })
+          : null;
+      try {
+        const target = await onAskAgent(detail, newConversation);
+        writeTaskToComposer(target, {
+          ...task,
+          prompt: [
+            task.prompt,
+            selectedCodeCommitOid
+              ? `Viewed commit: ${selectedCodeCommitOid}.`
+              : detail.headSha
+                ? `Viewed pull request head: ${detail.headSha}.`
+                : "",
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        });
+        setTab("code");
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Could not open review chat",
+          description:
+            error instanceof Error ? error.message : "Could not prepare the review workspace.",
+        });
+      } finally {
+        if (toastId !== null) toastManager.close(toastId);
+        setHandoff(null);
+      }
+      return;
+    }
     if (attachTarget !== null) {
       writeTaskToComposer(attachTarget, task);
       toastManager.add({
@@ -2044,6 +2096,17 @@ export function PullRequestDetailPanel({
                       </span>
                     </span>
                   </MenuItem>
+                  {onAskAgent && detail.provider === "github" ? (
+                    <MenuItem
+                      disabled={handoff !== null}
+                      onClick={() =>
+                        void startAsk("new-review", { prompt: `Review ${detail.url}.` }, true)
+                      }
+                    >
+                      <MessageSquareIcon className="size-3.5" />
+                      Start a new review chat
+                    </MenuItem>
+                  ) : null}
                   <MenuItem disabled={handoff !== null} onClick={explainPullRequest}>
                     <BookOpenIcon className="mt-1 size-3.5 shrink-0 self-start" />
                     <span className="flex min-w-0 flex-col">

@@ -6,6 +6,7 @@ import {
   type PullRequestStack,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -340,6 +341,7 @@ const makeTestRuntime = Effect.fn("makeTestRuntime")(function* (
   client: WsRpcProtocolClient,
   localClient?: WsRpcProtocolClient,
   localOrigin = false,
+  diffLoader: PullRequestDiffLoader["Service"] = { load: () => Effect.die("unused") },
 ) {
   const originTarget = localOrigin
     ? new PrimaryConnectionTarget({
@@ -407,10 +409,7 @@ const makeTestRuntime = Effect.fn("makeTestRuntime")(function* (
   const runtime = Atom.runtime(
     Layer.merge(
       Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
-      Layer.succeed(
-        PullRequestDiffLoader,
-        PullRequestDiffLoader.of({ load: () => Effect.die("unused") }),
-      ),
+      Layer.succeed(PullRequestDiffLoader, PullRequestDiffLoader.of(diffLoader)),
     ),
   );
   const atoms = createPullRequestEnvironmentAtoms(runtime);
@@ -419,6 +418,66 @@ const makeTestRuntime = Effect.fn("makeTestRuntime")(function* (
   );
   return { runtime, atoms, registry, environmentRegistry, supervisor };
 });
+
+it.live("reuses prefetched diffs across tab mounts and keeps recent patches during refresh", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      yield* Effect.addFinalizer(() => Effect.sync(() => vi.useRealTimers()));
+      let reads = 0;
+      const refreshed = yield* Deferred.make<void>();
+      const { atoms, registry, supervisor } = yield* makeTestRuntime(
+        {} as WsRpcProtocolClient,
+        undefined,
+        false,
+        {
+          load: () =>
+            Effect.gen(function* () {
+              reads += 1;
+              if (reads > 1) yield* Deferred.await(refreshed);
+              return { patch: `patch-${reads}`, truncated: false, nextCursor: null };
+            }),
+        },
+      );
+      yield* SubscriptionRef.set(
+        supervisor.prepared,
+        Option.some({
+          environmentId: TARGET.environmentId,
+          label: TARGET.label,
+          httpBaseUrl: TARGET.httpBaseUrl,
+          socketUrl: `${TARGET.wsBaseUrl}/ws`,
+          httpAuthorization: null,
+          target: TARGET,
+        }),
+      );
+      const target = {
+        environmentId: TARGET.environmentId,
+        input: { projectId: ProjectId.make("project-1"), repository: "owner/repo", number: 7 },
+      };
+      const diff = atoms.diff(target);
+      const stopPrefetch = registry.mount(diff);
+      expect((yield* AtomRegistry.getResult(registry, diff)).patch).toBe("patch-1");
+      const stopCodeTab = registry.mount(atoms.diff(target));
+      expect((yield* AtomRegistry.getResult(registry, diff)).patch).toBe("patch-1");
+      expect(reads).toBe(1);
+      stopPrefetch();
+      stopCodeTab();
+
+      // Past the old five-minute eviction window, the patch is still available synchronously.
+      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(6 * 60_000));
+      const stopReopenedTab = registry.mount(diff);
+      yield* Effect.addFinalizer(() => Effect.sync(stopReopenedTab));
+      expect(Option.getOrThrow(AsyncResult.value(registry.get(diff))).patch).toBe("patch-1");
+      registry.refresh(diff);
+      expect(Option.getOrThrow(AsyncResult.value(registry.get(diff))).patch).toBe("patch-1");
+      yield* Deferred.succeed(refreshed, undefined);
+      expect(
+        (yield* AtomRegistry.getResult(registry, diff, { suspendOnWaiting: true })).patch,
+      ).toBe("patch-2");
+      expect(reads).toBe(2);
+    }),
+  ),
+);
 
 for (const permission of ["default", "origin-off", "destination-off", "read-only"] as const) {
   it.effect(`does not probe another environment with ${permission} routing permission`, () =>

@@ -117,6 +117,7 @@ export function applyThreadDetailEvent(
           id: event.payload.threadId,
           projectId: event.payload.projectId,
           title: event.payload.title,
+          purpose: event.payload.purpose ?? "chat",
           modelSelection: event.payload.modelSelection,
           runtimeMode: event.payload.runtimeMode,
           interactionMode: event.payload.interactionMode,

@@ -39,7 +39,7 @@ export type PullRequestListPreferencePatch = {
 };
 
 const DEFAULT_PULL_REQUEST_LIST_PREFERENCES = {
-  involvement: "all",
+  involvement: "reviewing",
   state: "open",
 } as const satisfies PullRequestListPreferences;
 
