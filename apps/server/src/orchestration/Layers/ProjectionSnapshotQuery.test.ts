@@ -453,6 +453,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
           title: "Thread 1",
+          purpose: "chat",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
@@ -580,6 +581,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
           title: "Thread 1",
+          purpose: "chat",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
@@ -647,6 +649,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       }
 
       const commandReadModel = yield* snapshotQuery.getCommandReadModel();
+      assert.equal(commandReadModel.threads[0]?.purpose, "chat");
       assert.deepEqual(commandReadModel.threads[0]?.pullRequests, expectedPullRequests);
       assert.deepEqual(
         commandReadModel.threads[0]?.linkedPullRequest,
