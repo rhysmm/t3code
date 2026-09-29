@@ -18,6 +18,7 @@ import type {
   ApprovalRequestId,
   EnvironmentId,
   MessageId,
+  AutoModelRouting,
   ModelSelection,
   OrchestrationThreadShell,
   ProviderApprovalDecision,
@@ -168,6 +169,9 @@ export interface ThreadDetailScreenProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
+  readonly selectedModelSelection: ModelSelection | null;
+  readonly autoModelRouting: AutoModelRouting | null;
+  readonly onUpdateAutoModelRouting: (routing: AutoModelRouting | null) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateThreadInteractionMode: (interactionMode: ProviderInteractionMode) => void;
   readonly onRespondToApproval: (
@@ -1080,6 +1084,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   connectionState={props.connectionStateLabel}
                   environmentLabel={props.environmentLabel}
                   selectedThread={props.selectedThread}
+                  selectedModelSelection={props.selectedModelSelection}
+                  autoModelRouting={props.autoModelRouting}
                   hasCompactableConversation={hasCompactableConversation && !props.isCompacting}
                   serverConfig={props.serverConfig}
                   queueCount={props.selectedThreadQueueCount}
@@ -1102,6 +1108,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   onSendMessage={handleSendMessage}
                   onShowUsageLimits={showUsageLimits}
                   onUpdateModelSelection={props.onUpdateThreadModelSelection}
+                  onUpdateAutoModelRouting={props.onUpdateAutoModelRouting}
                   onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}
                   onUpdateInteractionMode={props.onUpdateThreadInteractionMode}
                   onExpandedChange={setComposerExpanded}

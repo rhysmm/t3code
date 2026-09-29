@@ -170,6 +170,7 @@ describe("ProviderCommandReactor", () => {
   async function createHarness(input?: {
     readonly baseDir?: string;
     readonly initialTitle?: string;
+    readonly autoModel?: { readonly enabled: boolean; readonly apiKey: string };
     readonly deferReactorStart?: boolean;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
@@ -493,7 +494,9 @@ describe("ProviderCommandReactor", () => {
         }),
       ),
       Layer.provideMerge(Layer.mock(TerminalManager)({ closeIdle: closeIdleTerminals })),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(
+        ServerSettingsService.layerTest(input?.autoModel ? { autoModel: input.autoModel } : {}),
+      ),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(NodeServices.layer),
@@ -892,6 +895,97 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
     expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("title");
+  });
+
+  it("routes Auto again on each turn and stores the latest chosen model", async () => {
+    const autoModelRouting = {
+      candidates: [
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "quick",
+          options: [{ id: "reasoningEffort", value: "low" }],
+        },
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "deep",
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+      ],
+    };
+    const jevResponse = (choice: "quick" | "deep") =>
+      new Response(
+        JSON.stringify({ answers: { complexity: { type: "choice", choice, confidence: 0.9 } } }),
+        { status: 200 },
+      );
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jevResponse("quick"))
+      .mockResolvedValueOnce(jevResponse("deep"));
+    try {
+      const harness = await createHarness({ autoModel: { enabled: true, apiKey: "test-key" } });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-auto-turn-1"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-auto-message-1"),
+            role: "user",
+            text: "Rename this variable",
+            attachments: [],
+          },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "deep" },
+          autoModelRouting,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "quick",
+          options: [{ id: "reasoningEffort", value: "low" }],
+        },
+      });
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
+        Authorization: "Bearer test-key",
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-auto-turn-2"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-auto-message-2"),
+            role: "user",
+            text: "Now redesign the architecture and verify the migration",
+            attachments: [],
+          },
+          autoModelRouting,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "deep",
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+      });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      const thread = (await harness.readModel()).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      expect(thread?.modelSelection.model).toBe("deep");
+    } finally {
+      fetcher.mockRestore();
+    }
   });
 
   effectIt.effect("forwards only a user-renamed title when starting a provider session", () =>

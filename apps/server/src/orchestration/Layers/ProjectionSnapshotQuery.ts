@@ -1199,6 +1199,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const getActiveReviewWorkspacePathRow = SqlSchema.findOneOption({
+    Request: Schema.String,
+    Result: Schema.Struct({ matched: Schema.Number }),
+    execute: (cwd) => sql`
+      SELECT 1 AS "matched"
+      WHERE EXISTS (
+        SELECT 1 FROM projection_projects
+        WHERE workspace_root = ${cwd} AND deleted_at IS NULL
+      ) OR EXISTS (
+        SELECT 1 FROM projection_threads AS threads
+        INNER JOIN projection_projects AS projects ON projects.project_id = threads.project_id
+        WHERE threads.worktree_path = ${cwd}
+          AND threads.deleted_at IS NULL
+          AND projects.deleted_at IS NULL
+      )
+    `,
+  });
+
   const getActiveProjectRowById = SqlSchema.findOneOption({
     Request: ProjectIdLookupInput,
     Result: ProjectionProjectLookupRowSchema,
@@ -3112,6 +3130,19 @@ pending_approval_requests AS (
         ),
       );
 
+  const isActiveReviewWorkspacePath: ProjectionSnapshotQueryShape["isActiveReviewWorkspacePath"] = (
+    cwd,
+  ) =>
+    getActiveReviewWorkspacePathRow(cwd).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.isActiveReviewWorkspacePath:query",
+          "ProjectionSnapshotQuery.isActiveReviewWorkspacePath:decodeRow",
+        ),
+      ),
+      Effect.map(Option.isSome),
+    );
+
   const getProjectShells: ProjectionSnapshotQueryShape["getProjectShells"] = (projectIds) => {
     if (projectIds?.length === 0) return Effect.succeed([]);
     return listProjectRows({ activeOnly: true, projectIds }).pipe(
@@ -3850,6 +3881,7 @@ pending_approval_requests AS (
     getCounts,
     getEventReplayStats,
     getActiveProjectByWorkspaceRoot,
+    isActiveReviewWorkspacePath,
     getProjectShellById,
     getProjectShells,
     getFirstActiveThreadIdByProjectId,

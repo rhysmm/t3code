@@ -70,6 +70,30 @@ returns to the remembered selection.
 
 Leaving reasoning level or service tier unset uses the provider's own configuration.
 
+## Automatic model selection
+
+In **Settings → Integrations → Auto model selection**, enable Auto and save a TypeSafe API key for
+the environment that runs your threads. The key stays on that environment; you can replace or
+remove it there. An existing `TYPESAFE_API_KEY` on the server also works when Auto is enabled.
+On mobile, find the same controls under **Settings → Environments → [environment]**.
+
+Use **Auto** beside the model picker to choose a Quick and Deep model, plus an optional Standard
+model. Set an intelligence level for each model when its provider offers one, or leave it at the
+provider default. You can use the same model at different levels. Order the options from lighter
+to stronger. When Auto is on, T3 Code asks Jev to assess each new message and selects one of those
+options for that turn. This applies to later messages too, including messages sent from the queue.
+The Auto control shows the current model and intelligence level after a turn. Turn off Auto to
+choose manually again.
+The Auto choice is saved for that thread on the current client. Turn it on separately if you
+continue the thread from another device.
+
+The models must belong to one provider instance. Auto is unavailable when that provider requires
+a new thread to change models. If Jev is uncertain or temporarily unreachable, T3 Code uses the
+Deep model. A missing or rejected API key stops the turn with a setup error.
+
+Auto sends the latest prompt and thread title to TypeSafe AI for routing. Your coding provider
+credentials remain with the environment.
+
 ## Quote an assistant response
 
 On web and desktop, select text within one assistant response and choose
@@ -88,6 +112,21 @@ The quoted text and comment count toward the message limit.
 
 Mobile displays saved quotes and comments, but does not create citations or
 navigate to their sources.
+
+## Ask about a response in a note
+
+In a Codex chat on web or desktop, select text in an assistant response and choose
+**Note**. Ask a question in the side panel. The note agent receives the selected
+passage and recent conversation, can inspect the same project, and uses the parent
+chat's permission mode. If it requests approval, you can respond in the note panel.
+
+The highlight and note marker remain on the response. Click the highlighted text,
+the marker, or **Notes** to return to a saved note, ask follow-up questions, or
+collapse the panel. If the agent needs an answer the note panel cannot collect,
+the request links to the full chat. Note anchors are saved in this browser; the note
+conversation is a separate T3 Code thread hidden
+from the sidebar while its annotation exists. Removing the annotation makes that
+conversation available in the sidebar.
 
 ## Recall a sent prompt
 

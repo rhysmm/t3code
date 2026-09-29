@@ -52,6 +52,12 @@ describe("project thread title", () => {
       text,
       uploadedAttachments: [],
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      autoModelRouting: {
+        candidates: [
+          { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-luna" },
+          { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+        ],
+      },
       runtimeMode: "full-access",
       interactionMode: "default",
       workspaceMode: "local",
@@ -64,6 +70,10 @@ describe("project thread title", () => {
     expect(input.titleSeed).toBe(title);
     expect(input.bootstrap.createThread.title).toBe(input.titleSeed);
     expect(input.message.text).toBe(text);
+    expect(input.autoModelRouting?.candidates.map((candidate) => candidate.model)).toEqual([
+      "gpt-5.6-luna",
+      "gpt-5.6-sol",
+    ]);
   });
 });
 

@@ -553,6 +553,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       );
       updateComposerDraftSettings(selectedProjectDraftKey, {
         modelSelection: selection,
+        autoModelRouting: null,
         ...(provider?.showInteractionModeToggle === false
           ? { interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE }
           : {}),
@@ -930,6 +931,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       replaceComposerDraftAttachments(draftKey, message.attachments);
       updateComposerDraftSettings(draftKey, {
         modelSelection: message.modelSelection,
+        autoModelRouting: message.autoModelRouting ?? null,
         runtimeMode: message.runtimeMode,
         interactionMode: message.interactionMode,
         workspaceSelection: {
@@ -995,6 +997,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         attachments: draft.attachments,
         context: draft.context,
         modelSelection: draftModelSelection,
+        ...(draft.autoModelRouting ? { autoModelRouting: draft.autoModelRouting } : {}),
         runtimeMode: draft.runtimeMode ?? defaultRuntimeMode,
         interactionMode: resolvePendingTaskInteractionMode({
           preferenceLoaded: planModePreferenceLoaded,

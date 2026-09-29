@@ -1,4 +1,5 @@
 import type {
+  AutoModelRouting,
   ModelSelection,
   PreviewAnnotationPayload,
   ProviderInteractionMode,
@@ -19,6 +20,7 @@ import type { ReviewCommentContext } from "./reviewCommentContext";
  */
 export interface QueuedMessageSendSettings {
   modelSelection: ModelSelection;
+  autoModelRouting?: AutoModelRouting;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
   /** Effort written into the prompt text, for providers that read it there. */

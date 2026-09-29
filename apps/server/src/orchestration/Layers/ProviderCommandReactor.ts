@@ -66,6 +66,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
+import { routeAutoModel } from "../AutoModelRouter.ts";
 const isProviderAdapterProcessError = Schema.is(ProviderAdapterProcessError);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
@@ -1490,6 +1491,55 @@ const make = Effect.gen(function* () {
       turnsAfterCompaction.set(event.payload.threadId, queued);
       return;
     }
+    const selectedModel = yield* Effect.gen(function* () {
+      if (!event.payload.autoModelRouting) return event.payload.modelSelection;
+      const autoModelSettings = (yield* serverSettingsService.getSettings).autoModel;
+      if (!autoModelSettings.enabled) {
+        return yield* new ProviderAdapterRequestError({
+          provider: "Jev",
+          method: "thread.turn.start",
+          detail: "Enable Auto model selection in Settings → Integrations before using Auto.",
+        });
+      }
+      const autoInstanceId = event.payload.autoModelRouting.candidates[0]?.instanceId;
+      const providers = yield* providerRegistry.getProviders;
+      if (
+        providers.some(
+          (provider) =>
+            provider.instanceId === autoInstanceId &&
+            provider.requiresNewThreadForModelChange === true,
+        )
+      ) {
+        return yield* new ProviderAdapterRequestError({
+          provider: providerErrorLabelFromInstanceHint({ instanceId: String(autoInstanceId) }),
+          method: "thread.turn.start",
+          detail: "Auto is unavailable for a provider that requires a new thread to change models.",
+        });
+      }
+      const selection = yield* routeAutoModel({
+        routing: event.payload.autoModelRouting,
+        prompt: assistantCitationsToPlainText(message.text),
+        threadTitle: thread.title,
+        ...(thread.session?.providerInstanceId || hasOtherUserMessages
+          ? {
+              boundInstanceId:
+                thread.session?.providerInstanceId ?? thread.modelSelection.instanceId,
+            }
+          : {}),
+        apiKey: autoModelSettings.apiKey || process.env.TYPESAFE_API_KEY,
+      });
+      yield* orchestrationEngine.dispatch({
+        type: "thread.meta.update",
+        commandId: yield* serverCommandId("auto-model-route"),
+        threadId: thread.id,
+        modelSelection: selection,
+      });
+      return selection;
+    }).pipe(
+      Effect.asSome,
+      Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(Option.none()))),
+    );
+    if (Option.isNone(selectedModel)) return;
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
       messageText: projectComposerContextForProvider({
@@ -1497,9 +1547,7 @@ const make = Effect.gen(function* () {
         records: message.context?.records ?? [],
       }),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-      ...(event.payload.modelSelection !== undefined
-        ? { modelSelection: event.payload.modelSelection }
-        : {}),
+      ...(selectedModel.value !== undefined ? { modelSelection: selectedModel.value } : {}),
       interactionMode: event.payload.interactionMode,
       createdAt: event.payload.createdAt,
       // Later turns must not reuse the current title as titleSeed. Only the

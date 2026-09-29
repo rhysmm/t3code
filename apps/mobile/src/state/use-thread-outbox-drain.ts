@@ -404,6 +404,7 @@ export async function recoverEditedCreationAfterDelivery(
     // undefined would clear choices the user already made on the draft.
     updateComposerDraftSettings(draftKey, {
       ...(kept.modelSelection !== undefined ? { modelSelection: kept.modelSelection } : {}),
+      ...(kept.autoModelRouting !== undefined ? { autoModelRouting: kept.autoModelRouting } : {}),
       ...(kept.runtimeMode !== undefined ? { runtimeMode: kept.runtimeMode } : {}),
       ...(kept.interactionMode !== undefined ? { interactionMode: kept.interactionMode } : {}),
     });
@@ -496,6 +497,7 @@ export async function restoreRejectedQueuedMessage(
     }
     updateComposerDraftSettings(draftKey, {
       ...(queuedMessage.modelSelection ? { modelSelection: queuedMessage.modelSelection } : {}),
+      autoModelRouting: queuedMessage.autoModelRouting ?? null,
       ...(queuedMessage.runtimeMode ? { runtimeMode: queuedMessage.runtimeMode } : {}),
       ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
       ...(queuedMessage.creation
@@ -904,6 +906,9 @@ export function useThreadOutboxDrain(): void {
             attachments: prepared.attachments,
           },
           modelSelection: sendSettings.modelSelection,
+          ...(queuedMessage.autoModelRouting
+            ? { autoModelRouting: queuedMessage.autoModelRouting }
+            : {}),
           runtimeMode: sendSettings.runtimeMode,
           interactionMode: sendSettings.interactionMode,
           createdAt: queuedMessage.createdAt,
@@ -1032,6 +1037,9 @@ export function useThreadOutboxDrain(): void {
           ),
           uploadedAttachments: prepared.attachments,
           modelSelection: sendSettings.modelSelection,
+          ...(queuedMessage.autoModelRouting
+            ? { autoModelRouting: queuedMessage.autoModelRouting }
+            : {}),
           runtimeMode: sendSettings.runtimeMode,
           interactionMode: sendSettings.interactionMode,
           workspaceMode: creation.workspaceMode,
@@ -1049,6 +1057,10 @@ export function useThreadOutboxDrain(): void {
       if (failure?.action === "restore") {
         return restoreQueuedMessage(persistedMessage, failure.message);
       }
+      updateComposerDraftSettings(
+        scopedThreadKey(persistedMessage.environmentId, persistedMessage.threadId),
+        { autoModelRouting: persistedMessage.autoModelRouting ?? null },
+      );
       // Recorded before the queue entry goes so the thread screen never sees a
       // gap between the queued creation and the server's shell.
       recordPendingThreadCreationOutcome({ kind: "delivered", message: persistedMessage });
@@ -1293,15 +1305,17 @@ export function useThreadOutboxDrain(): void {
             return true;
           }
         }
+        if (deliveryAction === "remove" && creation !== undefined) {
+          updateComposerDraftSettings(
+            scopedThreadKey(nextQueuedMessage.environmentId, nextQueuedMessage.threadId),
+            { autoModelRouting: nextQueuedMessage.autoModelRouting ?? null },
+          );
+          // A creation entry that survived delivery may hold edits. Recovery
+          // preserves them even after a restart loses the in-memory distinction.
+          return recoverEditedCreationAfterDelivery(nextQueuedMessage);
+        }
         return deliveryAction === "remove"
-          ? creation !== undefined
-            ? // A creation entry that survived its delivery cleanup either
-              // holds edits (recover them) or the delivered payload (a
-              // recovered duplicate the user can delete). Restart loses any
-              // in-memory distinction, and losing edits is the worse failure,
-              // so recovery is unconditional here.
-              recoverEditedCreationAfterDelivery(nextQueuedMessage)
-            : removeQueuedMessage("[thread-outbox] failed to remove message for a missing thread")
+          ? removeQueuedMessage("[thread-outbox] failed to remove message for a missing thread")
           : creation !== undefined
             ? creationProjectCwd !== null
               ? sendQueuedCreation(nextQueuedMessage, creation, creationProjectCwd)

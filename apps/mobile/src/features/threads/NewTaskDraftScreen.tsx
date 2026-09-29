@@ -65,6 +65,7 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { hasProviderUsageLimits, isUsageLimitsCommand } from "@t3tools/shared/usageLimits";
+import { canConfigureAutoModelSelections } from "@t3tools/shared/model";
 import { COMPOSER_LAYOUT_TRANSITION, ComposerSurface } from "./ThreadComposer";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
@@ -95,6 +96,7 @@ import {
   captureComposerDraftInsertion,
   countComposerDraftAttachmentsAfterSelection,
   getComposerDraftSnapshot,
+  useComposerDraft,
   mergeComposerDraftContent,
   restoreComposerDraftSnapshot,
   updateComposerDraftSettings,
@@ -109,10 +111,13 @@ import { sourceControlEnvironment } from "../../state/sourceControl";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ProjectCloneBanner } from "../../components/ProjectCloneBanner";
 import {
+  buildModelOptions,
   isModelSelectionUnavailable,
   resolveSelectableModelSelection,
 } from "../../lib/modelOptions";
 import { deriveThreadTitleFromPrompt } from "../../lib/projectThreadStartTurn";
+import { scopedThreadKey } from "../../lib/scopedEntities";
+import { AutoModelPicker } from "./AutoModelPicker";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
 import { useRemoteConnectionStatus } from "../../state/use-remote-environment-registry";
@@ -215,6 +220,19 @@ export function NewTaskDraftScreen(props: {
       (environment) => environment.environmentId === selectedProject.environmentId,
     )?.connectionState === "connected";
   const modelUnavailable = environmentConnected && flow.selectedModelOption?.isUnavailable === true;
+  const autoDraft = useComposerDraft(flow.draftKey);
+  const [autoPickerOpen, setAutoPickerOpen] = useState(false);
+  const autoModels = useMemo(
+    () =>
+      buildModelOptions(selectedEnvironmentServerConfig, flow.selectedModel).filter(
+        (option) => option.selection.instanceId === flow.selectedModel?.instanceId,
+      ),
+    [selectedEnvironmentServerConfig, flow.selectedModel],
+  );
+  const autoRouting =
+    autoDraft.autoModelRouting?.candidates[0]?.instanceId === flow.selectedModel?.instanceId
+      ? (autoDraft.autoModelRouting ?? null)
+      : null;
   // A project added by cloning exists before its files do: the prompt can be
   // written meanwhile, but Start waits for the clone.
   const projectCloneState = useProjectClone(
@@ -1290,6 +1308,9 @@ export function NewTaskDraftScreen(props: {
     flow.setSubmitting(true);
     try {
       await enqueueThreadOutboxMessage(message);
+      updateComposerDraftSettings(scopedThreadKey(message.environmentId, message.threadId), {
+        autoModelRouting: message.autoModelRouting ?? null,
+      });
     } catch (error) {
       Alert.alert(
         "Could not queue task",
@@ -1703,6 +1724,18 @@ export function NewTaskDraftScreen(props: {
                         onPress={settingsSheetPresentation.open}
                       />
                     </View>
+                    <ComposerInlineControl
+                      accessibilityLabel="Configure automatic model selection"
+                      disabled={
+                        isComposerInteractionLocked ||
+                        !canConfigureAutoModelSelections(autoModels) ||
+                        flow.selectedProviderStatus?.requiresNewThreadForModelChange === true
+                      }
+                      label={autoRouting ? "Auto on" : "Auto"}
+                      selected={autoRouting !== null}
+                      showChevron={false}
+                      onPress={() => setAutoPickerOpen(true)}
+                    />
                     {flow.planModeEnabled ? (
                       <ComposerInlineControl
                         accessibilityHint={`Switches to ${flow.interactionMode === "plan" ? "Build" : "Plan"} mode`}
@@ -1765,6 +1798,21 @@ export function NewTaskDraftScreen(props: {
       </ComposerSurface>
       <VideoPreviewModal source={previewVideo} onRequestClose={closeMediaPreview} />
       <FilePreviewModal source={previewFile} onRequestClose={closeMediaPreview} />
+      {flow.selectedModel ? (
+        <AutoModelPicker
+          visible={autoPickerOpen}
+          available={selectedEnvironmentServerConfig?.settings.autoModel.enabled ?? false}
+          keySaved={Boolean(selectedEnvironmentServerConfig?.settings.autoModel.apiKey)}
+          routing={autoRouting}
+          currentModel={flow.selectedModel}
+          models={autoModels}
+          onChange={(routing) => {
+            if (flow.draftKey)
+              updateComposerDraftSettings(flow.draftKey, { autoModelRouting: routing });
+          }}
+          onClose={() => setAutoPickerOpen(false)}
+        />
+      ) : null}
     </View>
   );
 

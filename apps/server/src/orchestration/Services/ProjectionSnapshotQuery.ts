@@ -201,6 +201,11 @@ export interface ProjectionSnapshotQueryShape {
     workspaceRoot: string,
   ) => Effect.Effect<Option.Option<OrchestrationProject>, ProjectionRepositoryError>;
 
+  /** Check whether a path is an active project root or thread worktree. */
+  readonly isActiveReviewWorkspacePath: (
+    cwd: string,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
+
   /**
    * Read a single active project shell row by id.
    */

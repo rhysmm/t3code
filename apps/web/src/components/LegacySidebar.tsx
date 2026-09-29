@@ -79,6 +79,7 @@ import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstra
 import { isElectron } from "../env";
 import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
+import { isInlineNoteThread, useInlineNoteThreadKeys } from "../hooks/useInlineNoteThreadKeys";
 import { releaseProjectDraftUploads } from "../lib/composerDraftUploads";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isMacPlatform } from "../lib/utils";
@@ -1251,7 +1252,15 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     },
   });
   const openPrLink = useOpenPrLink();
-  const sidebarThreads = useThreadShellsForProjectRefs(project.memberProjectRefs);
+  const allSidebarThreads = useThreadShellsForProjectRefs(project.memberProjectRefs);
+  const inlineNoteThreadKeys = useInlineNoteThreadKeys();
+  const sidebarThreads = useMemo(
+    () =>
+      allSidebarThreads.filter(
+        (thread) => !isInlineNoteThread(inlineNoteThreadKeys, thread.environmentId, thread.id),
+      ),
+    [allSidebarThreads, inlineNoteThreadKeys],
+  );
   const sidebarThreadByKey = useMemo(
     () =>
       new Map(
@@ -3126,7 +3135,15 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
 
 export default function LegacySidebar() {
   const projects = useProjects();
-  const sidebarThreads = useThreadShells();
+  const allSidebarThreads = useThreadShells();
+  const inlineNoteThreadKeys = useInlineNoteThreadKeys();
+  const sidebarThreads = useMemo(
+    () =>
+      allSidebarThreads.filter(
+        (thread) => !isInlineNoteThread(inlineNoteThreadKeys, thread.environmentId, thread.id),
+      ),
+    [allSidebarThreads, inlineNoteThreadKeys],
+  );
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);

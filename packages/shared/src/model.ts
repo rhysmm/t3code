@@ -72,6 +72,55 @@ export function getModelSelectionBooleanOptionValue(
   return getProviderOptionBooleanSelectionValue(modelSelection?.options, id);
 }
 
+const AUTO_MODEL_REASONING_OPTION_IDS = new Set([
+  "reasoningEffort",
+  "effort",
+  "reasoning",
+  "variant",
+]);
+
+export function getAutoModelReasoningOption(capabilities: ModelCapabilities | null | undefined) {
+  const descriptor = capabilities?.optionDescriptors?.find(
+    (option) => option.type === "select" && AUTO_MODEL_REASONING_OPTION_IDS.has(option.id),
+  );
+  if (descriptor?.type !== "select") return null;
+  const injected = new Set(descriptor.promptInjectedValues ?? []);
+  const choices = descriptor.options.filter(
+    (option) => !injected.has(option.id) && option.id !== "ultracode",
+  );
+  return choices.length > 0 ? { id: descriptor.id, choices } : null;
+}
+
+export function withAutoModelReasoningOption(
+  selection: ModelSelection,
+  optionId: string,
+  value: string | null,
+): ModelSelection {
+  const options = (selection.options ?? []).filter((option) => option.id !== optionId);
+  if (value) options.push({ id: optionId, value });
+  return options.length > 0
+    ? { ...selection, options }
+    : { instanceId: selection.instanceId, model: selection.model };
+}
+
+export function autoModelCandidateKey(selection: ModelSelection): string {
+  const options = [...(selection.options ?? [])].sort((left, right) =>
+    left.id.localeCompare(right.id),
+  );
+  return JSON.stringify([selection.instanceId, selection.model, options]);
+}
+
+export function canConfigureAutoModelSelections(
+  models: ReadonlyArray<{ readonly capabilities?: ModelCapabilities | null }>,
+): boolean {
+  return (
+    models.length >= 2 ||
+    models.some(
+      (model) => (getAutoModelReasoningOption(model.capabilities)?.choices.length ?? 0) >= 2,
+    )
+  );
+}
+
 function resolveDescriptorChoiceValue(
   descriptor: Extract<ProviderOptionDescriptor, { type: "select" }>,
   raw: string | null | undefined,

@@ -392,6 +392,12 @@ describe("thread outbox", () => {
         model: "gpt-5.4",
         options: [{ id: "reasoningEffort", value: "xhigh" }],
       },
+      autoModelRouting: {
+        candidates: [
+          { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+          { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        ],
+      },
       runtimeMode: "approval-required",
       interactionMode: "plan",
     } satisfies QueuedThreadMessage;

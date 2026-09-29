@@ -49,6 +49,7 @@ import {
 const EMPTY_AGENT_PANEL_MODEL = emptyAgentPanelModel();
 const NOOP_OPEN_AGENTS = () => {};
 const EMPTY_QUEUED_MESSAGES: ReadonlyArray<QueuedComposerMessage> = [];
+const EMPTY_NOTE_MARKERS: readonly InlineNote[] = [];
 const NOOP_QUEUED_MESSAGE_ACTION = (_id: string) => {};
 const NOOP_USE_ARTIFACT_TEMPLATE = () => {};
 const NOOP_OPEN_ATTACHMENT = (_attachment: ChatFileAttachment) => {};
@@ -119,6 +120,7 @@ import {
   GlobeIcon,
   HammerIcon,
   MessageCircleIcon,
+  MessageSquareIcon,
   Minimize2Icon,
   MousePointerClickIcon,
   PaintbrushIcon,
@@ -168,6 +170,7 @@ import { PierreEntryIcon } from "./PierreEntryIcon";
 import { inferEntryKindFromPath } from "../../pierre-icons";
 import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
+import type { InlineNote } from "~/lib/inlineNotes";
 import {
   AssistantCitationSource,
   type AssistantCitationRequest,
@@ -268,6 +271,8 @@ import { ComputerUseAppIcon } from "~/components/Icons";
 
 interface TimelineRowSharedState {
   citationRequest: AssistantCitationTarget | null;
+  noteMarkersByMessage: ReadonlyMap<MessageId, readonly InlineNote[]>;
+  onOpenNote: ((id: string) => void) | undefined;
   listRef: React.RefObject<LegendListRef | null>;
   timestampFormat: TimestampFormat;
   routeThreadKey: string;
@@ -401,6 +406,9 @@ interface MessagesTimelineProps {
     citation: AssistantCitation,
     sourceAnchor: AssistantCitationSourceAnchor,
   ) => boolean;
+  onNoteAssistantText?: (citation: AssistantCitation) => boolean;
+  noteMarkers?: readonly InlineNote[];
+  onOpenNote?: (id: string) => void;
   agentPanelModel?: AgentPanelModel;
   onOpenAgents?: () => void;
   isWorking: boolean;
@@ -477,6 +485,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   citationRequest = null,
   citationHistoryLoading = false,
   onCiteAssistantText,
+  onNoteAssistantText,
+  noteMarkers = EMPTY_NOTE_MARKERS,
+  onOpenNote,
   isWorking,
   worktreeSetup = null,
   onCancelWorktreeSetup,
@@ -1138,9 +1149,20 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     };
   }, [timelineViewportElement, rows.length, reportContentOverflow, chatWidth]);
 
+  const noteMarkersByMessage = useMemo(() => {
+    const grouped = new Map<MessageId, InlineNote[]>();
+    for (const note of noteMarkers) {
+      const notes = grouped.get(note.citation.messageId) ?? [];
+      notes.push(note);
+      grouped.set(note.citation.messageId, notes);
+    }
+    return grouped;
+  }, [noteMarkers]);
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
       citationRequest: readyCitationRequest,
+      noteMarkersByMessage,
+      onOpenNote,
       listRef,
       timestampFormat,
       routeThreadKey,
@@ -1178,6 +1200,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }),
     [
       readyCitationRequest,
+      noteMarkersByMessage,
+      onOpenNote,
       listRef,
       timestampFormat,
       routeThreadKey,
@@ -1287,6 +1311,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               viewport={timelineViewportElement}
               threadRef={citationThreadRef}
               onCite={onCiteAssistantText}
+              {...(onNoteAssistantText ? { onNote: onNoteAssistantText } : {})}
             />
           ) : null}
           <LegendList<MessagesTimelineRow>
@@ -2391,6 +2416,8 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           itemKey={row.id}
           request={ctx.citationRequest}
           listRef={ctx.listRef}
+          notes={ctx.noteMarkersByMessage.get(row.message.id) ?? []}
+          {...(ctx.onOpenNote ? { onOpenNote: ctx.onOpenNote } : {})}
         >
           <ChatMarkdown
             text={messageText}
@@ -2405,6 +2432,20 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             onImageExpand={ctx.onImageExpand}
           />
         </AssistantCitationSource>
+        {ctx.onOpenNote &&
+          ctx.noteMarkersByMessage.get(row.message.id)?.map((note) => (
+            <Button
+              key={note.id}
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="mt-1"
+              onClick={() => ctx.onOpenNote?.(note.id)}
+              title={note.question}
+            >
+              <MessageSquareIcon className="size-3" /> Note
+            </Button>
+          ))}
         <AssistantChangedFilesSection
           turnSummary={row.assistantTurnDiffSummary}
           routeThreadKey={ctx.routeThreadKey}

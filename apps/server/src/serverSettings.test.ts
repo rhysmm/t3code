@@ -1342,6 +1342,70 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       }).pipe(Effect.provide(makeServerSettingsLayerWithSecrets())),
   );
 
+  it.effect("stores the TypeSafe key outside settings and supports replacement and removal", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const secrets = yield* ServerSecretStore.ServerSecretStore;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+
+      const saved = yield* serverSettings.updateSettings({
+        autoModel: { enabled: true, apiKey: "typesafe-test-key" },
+      });
+      assert.deepEqual(saved.autoModel, { enabled: true, apiKey: "typesafe-test-key" });
+      assert.notInclude(
+        yield* fileSystem.readFileString(serverConfig.settingsPath),
+        "typesafe-test-key",
+      );
+      const forClient = ServerSettingsModule.redactServerSettingsForClient(saved).autoModel;
+      assert.isAbove(forClient.apiKey.length, 0);
+      assert.notEqual(forClient.apiKey, "typesafe-test-key");
+      assert.equal(
+        new TextDecoder().decode(Option.getOrThrow(yield* secrets.get("typesafe-api-key"))),
+        "typesafe-test-key",
+      );
+
+      yield* serverSettings.updateSettings({
+        autoModel: { enabled: false, apiKey: forClient.apiKey },
+      });
+      assert.deepEqual((yield* serverSettings.getSettings).autoModel, {
+        enabled: false,
+        apiKey: "typesafe-test-key",
+      });
+      yield* serverSettings.updateSettings({ autoModel: { apiKey: "replacement-key" } });
+      assert.equal((yield* serverSettings.getSettings).autoModel.apiKey, "replacement-key");
+      yield* serverSettings.updateSettings({ autoModel: { apiKey: "" } });
+      assert.equal((yield* serverSettings.getSettings).autoModel.apiKey, "");
+      assert.isTrue(Option.isNone(yield* secrets.get("typesafe-api-key")));
+    }).pipe(Effect.provide(makeServerSettingsLayerWithSecrets())),
+  );
+
+  it.effect("moves a TypeSafe key from settings.json into the secret store on load", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const secrets = yield* ServerSecretStore.ServerSecretStore;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        '{"autoModel":{"enabled":true,"apiKey":"hand-edited-key"}}',
+      );
+
+      assert.deepEqual((yield* serverSettings.getSettings).autoModel, {
+        enabled: true,
+        apiKey: "hand-edited-key",
+      });
+      assert.notInclude(
+        yield* fileSystem.readFileString(serverConfig.settingsPath),
+        "hand-edited-key",
+      );
+      assert.equal(
+        new TextDecoder().decode(Option.getOrThrow(yield* secrets.get("typesafe-api-key"))),
+        "hand-edited-key",
+      );
+    }).pipe(Effect.provide(makeServerSettingsLayerWithSecrets())),
+  );
+
   it.effect("removes a Bitbucket secret once its token is cleared by hand in settings.json", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;

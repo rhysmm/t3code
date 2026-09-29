@@ -16,6 +16,7 @@ import {
   changeQuestionAttachmentPreparation,
 } from "../../questionAttachments";
 import type {
+  AutoModelRouting,
   ApprovalRequestId,
   KeybindingCommand,
   AssistantCitation,
@@ -35,12 +36,14 @@ import type {
   SnapShotSource,
 } from "@t3tools/contracts";
 import {
+  AutoModelRouting as AutoModelRoutingSchema,
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import {
   isPasteAsTextShortcut,
@@ -244,6 +247,8 @@ import {
 import { useEnvironmentQuery } from "~/state/query";
 import { useDebouncedValue } from "~/state/queries";
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { AutoModelControl } from "./AutoModelControl";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
@@ -1300,6 +1305,7 @@ export interface ChatComposerHandle {
     selectedPromptEffort: string | null;
     selectedModelOptionsForDispatch: unknown;
     selectedModelSelection: ModelSelection;
+    autoModelRouting: AutoModelRouting | null;
     multipleModelSelections: ReadonlyArray<ModelSelection> | null;
     providerAvailable: boolean;
     selectedProvider: ProviderDriverKind;
@@ -1580,6 +1586,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   } = props;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const composerDraftTargetKey = composerTargetKey(composerDraftTarget);
+  const [autoModelSetting, setAutoModelSetting] = useLocalStorage(
+    `t3code:auto-model:${environmentId}:${routeThreadRef.threadId}`,
+    { enabled: false, routing: null },
+    Schema.Struct({ enabled: Schema.Boolean, routing: Schema.NullOr(AutoModelRoutingSchema) }),
+  );
   // Opening a running thread resyncs for a few frames. Show the sync row, and
   // hide the tasks row for it, only when the sync lasts. Logic that depends on
   // the real phase keeps reading `props.threadSyncPhase`.
@@ -2049,6 +2060,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
     [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
   );
+  const autoModelRouting =
+    autoModelSetting.enabled &&
+    autoModelSetting.routing?.candidates[0]?.instanceId === selectedModelSelection.instanceId &&
+    multipleModelSelections === null
+      ? autoModelSetting.routing
+      : null;
   const selectedModelForPicker = selectedModel;
   // Instance-keyed option list so the picker can show each configured
   // instance (built-in + custom) as a first-class sidebar entry. The
@@ -5095,9 +5112,31 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         getModelDisabledReason={getModelDisabledReason}
         onInstanceModelChange={(instanceId, model) => {
           setMultipleModelSelections(null);
+          setAutoModelSetting((current) => ({ ...current, enabled: false }));
           onProviderModelSelect(instanceId, model);
         }}
         onOpenProviderSetup={onOpenProviderSetup}
+      />
+      <AutoModelControl
+        enabled={autoModelRouting !== null}
+        currentChoice={autoModelRouting ? (activeThreadModelSelection ?? null) : null}
+        available={settings.autoModel.enabled}
+        keySaved={settings.autoModel.apiKey.length > 0}
+        routing={
+          autoModelSetting.routing?.candidates[0]?.instanceId === selectedInstanceId
+            ? autoModelSetting.routing
+            : null
+        }
+        currentModel={selectedModelSelection}
+        models={modelOptionsByInstance.get(selectedInstanceId) ?? []}
+        disabled={
+          providerCatalogPending ||
+          isSendBusy ||
+          multipleModelSelections !== null ||
+          selectedProviderStatus?.requiresNewThreadForModelChange === true
+        }
+        getModelDisabledReason={(model) => getModelDisabledReason(selectedInstanceId, model)}
+        onChange={(enabled, routing) => setAutoModelSetting({ enabled, routing })}
       />
 
       <>
@@ -6019,6 +6058,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         selectedPromptEffort,
         selectedModelOptionsForDispatch,
         selectedModelSelection,
+        autoModelRouting,
         multipleModelSelections:
           routeKind === "draft" && multipleModelSelections !== null
             ? multipleModelSelections.map((selection) =>
@@ -6082,6 +6122,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedModel,
       selectedModelOptionsForDispatch,
       selectedModelSelection,
+      autoModelRouting,
       multipleModelSelections,
       setMultipleModelSelections,
       routeKind,

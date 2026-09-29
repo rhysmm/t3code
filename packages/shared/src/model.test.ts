@@ -3,17 +3,21 @@ import { ProviderInstanceId, type ModelCapabilities } from "@t3tools/contracts";
 
 import {
   applyClaudePromptEffortPrefix,
+  autoModelCandidateKey,
   buildExplicitProviderOptionSelectionsFromDescriptors,
   buildProviderOptionSelectionsFromDescriptors,
+  canConfigureAutoModelSelections,
   createModelCapabilities,
   createModelSelection,
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
+  getAutoModelReasoningOption,
   getProviderOptionDescriptors,
   readCustomModelEntries,
   toCustomModelSetting,
   getProviderOptionBooleanSelectionValue,
   getProviderOptionStringSelectionValue,
+  withAutoModelReasoningOption,
 } from "./model.ts";
 
 const codexCaps: ModelCapabilities = createModelCapabilities({
@@ -61,6 +65,35 @@ const claudeCaps: ModelCapabilities = createModelCapabilities({
       currentValue: "1m",
     },
   ],
+});
+
+describe("Auto model reasoning", () => {
+  it("offers real provider levels and keeps other model options when a level changes", () => {
+    expect(getAutoModelReasoningOption(claudeCaps)).toEqual({
+      id: "effort",
+      choices: [
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High", isDefault: true },
+      ],
+    });
+    const selection = createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-test", [
+      { id: "effort", value: "medium" },
+      { id: "contextWindow", value: "1m" },
+    ]);
+    expect(withAutoModelReasoningOption(selection, "effort", "high").options).toEqual([
+      { id: "contextWindow", value: "1m" },
+      { id: "effort", value: "high" },
+    ]);
+    expect(withAutoModelReasoningOption(selection, "effort", null).options).toEqual([
+      { id: "contextWindow", value: "1m" },
+    ]);
+    expect(getAutoModelReasoningOption({ optionDescriptors: [] })).toBeNull();
+    expect(canConfigureAutoModelSelections([{ capabilities: codexCaps }])).toBe(true);
+    expect(canConfigureAutoModelSelections([{ capabilities: null }])).toBe(false);
+    expect(autoModelCandidateKey(selection)).toBe(
+      autoModelCandidateKey({ ...selection, options: selection.options!.toReversed() }),
+    );
+  });
 });
 
 describe("descriptor helpers", () => {

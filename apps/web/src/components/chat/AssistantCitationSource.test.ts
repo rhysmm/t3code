@@ -3,6 +3,7 @@ import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  inlineNoteAtPoint,
   observeAssistantCitationCommentSource,
   observeAssistantCitationSource,
   type AssistantCitationTarget,
@@ -15,8 +16,27 @@ vi.mock("~/lib/assistantTextSelection", () => ({
 vi.mock("../ui/toast", () => ({ toastManager: { add: mocks.toast } }));
 
 function rect(top: number, height = 20) {
-  return { top, bottom: top + height, height, width: 100 } as DOMRect;
+  return { top, bottom: top + height, left: 0, right: 100, height, width: 100 } as DOMRect;
 }
+
+describe("inline note hit testing", () => {
+  it("opens the newest overlapping note only when the click lands on its text", () => {
+    const rangeAt = (top: number): Range =>
+      ({
+        getClientRects: () => ({ length: 1, item: () => rect(top) }),
+      }) as unknown as Range;
+    const notes = [
+      { id: "older", range: rangeAt(10) },
+      { id: "newer", range: rangeAt(10) },
+      { id: "below", range: rangeAt(40) },
+    ];
+
+    expect(inlineNoteAtPoint(notes, 50, 15)).toBe("newer");
+    expect(inlineNoteAtPoint(notes, 50, 45)).toBe("below");
+    expect(inlineNoteAtPoint(notes, 150, 15)).toBeNull();
+    expect(inlineNoteAtPoint(notes, 50, 35)).toBeNull();
+  });
+});
 
 class TestAnimation {
   currentTime = 0;

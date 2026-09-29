@@ -245,6 +245,7 @@ describe("ProviderSessionReaper", () => {
             Effect.succeed({ snapshotSequence: input.readModel.snapshotSequence }),
           getCounts: () => Effect.die("unused"),
           getEventReplayStats: () => Effect.die("unused"),
+          isActiveReviewWorkspacePath: () => Effect.succeed(false),
           getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
           getProjectShells: () => Effect.die("unused"),
           getProjectShellById: () => Effect.die("unused"),

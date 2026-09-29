@@ -155,6 +155,7 @@ const BITBUCKET_SECRET_NAMES = {
   apiToken: "bitbucket-api-token",
 } as const;
 const BITBUCKET_SECRET_FIELDS = ["accessToken", "apiToken"] as const;
+const AUTO_MODEL_SECRET_NAME = "typesafe-api-key";
 
 const redactSecret = (value: string) => (value.length > 0 ? SECRET_REDACTED : "");
 
@@ -199,7 +200,13 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
     accessToken: redactSecret(settings.bitbucket.accessToken),
     apiToken: redactSecret(settings.bitbucket.apiToken),
   };
-  return { ...settings, providerInstances, usageLimitSources, bitbucket };
+  return {
+    ...settings,
+    providerInstances,
+    usageLimitSources,
+    bitbucket,
+    autoModel: { ...settings.autoModel, apiKey: redactSecret(settings.autoModel.apiKey) },
+  };
 }
 
 export class ServerSettingsService extends Context.Service<
@@ -597,6 +604,25 @@ const make = Effect.gen(function* () {
       return moved ? { ...settings, bitbucket } : settings;
     });
 
+  const moveInlineAutoModelKey = (settings: ServerSettings) =>
+    Effect.gen(function* () {
+      const apiKey = settings.autoModel.apiKey;
+      if (!apiKey || apiKey === SECRET_REDACTED) return settings;
+      const stored = yield* secretStore
+        .set(AUTO_MODEL_SECRET_NAME, textEncoder.encode(apiKey))
+        .pipe(
+          Effect.as(true),
+          Effect.catch(() =>
+            Effect.logWarning("failed to move the TypeSafe API key into the secret store").pipe(
+              Effect.as(false),
+            ),
+          ),
+        );
+      return stored
+        ? { ...settings, autoModel: { ...settings.autoModel, apiKey: SECRET_REDACTED } }
+        : settings;
+    });
+
   const loadSettingsFromDisk = Effect.gen(function* () {
     let settings = DEFAULT_SERVER_SETTINGS;
     let persisted: typeof PersistedOptionalProviderSettings.Type = {};
@@ -682,7 +708,9 @@ const make = Effect.gen(function* () {
       ? foldLegacyProjectSettings(loaded, legacyProjectRows)
       : loaded;
     // Only rewrite a file that decoded cleanly; an untrusted one stays for the user to repair.
-    const migrated = settingsFileTrusted ? yield* moveInlineBitbucketTokens(folded) : folded;
+    const migrated = settingsFileTrusted
+      ? yield* moveInlineAutoModelKey(yield* moveInlineBitbucketTokens(folded))
+      : folded;
     if (migrated !== loaded) {
       yield* writeSettingsAtomically(migrated);
     }
@@ -765,11 +793,23 @@ const make = Effect.gen(function* () {
           );
         bitbucket[field] = Option.isSome(secret) ? textDecoder.decode(secret.value) : "";
       }
+      const autoModel = { ...settings.autoModel };
+      if (autoModel.apiKey === SECRET_REDACTED) {
+        const secret = yield* secretStore
+          .get(AUTO_MODEL_SECRET_NAME)
+          .pipe(
+            Effect.mapError(
+              (cause) => new ServerSettingsError({ settingsPath, operation: "read-secret", cause }),
+            ),
+          );
+        autoModel.apiKey = Option.isSome(secret) ? textDecoder.decode(secret.value) : "";
+      }
       return {
         ...settings,
         providerInstances: providerInstances as ServerSettings["providerInstances"],
         usageLimitSources: usageLimitSources as ServerSettings["usageLimitSources"],
         bitbucket,
+        autoModel,
       };
     });
 
@@ -930,12 +970,36 @@ const make = Effect.gen(function* () {
         bitbucket[field] = SECRET_REDACTED;
       }
 
+      const autoModel = { ...next.autoModel };
+      let apiKey = autoModel.apiKey;
+      if (apiKey === SECRET_REDACTED) {
+        const inline = current.autoModel.apiKey;
+        if (inline !== SECRET_REDACTED && inline.length > 0) apiKey = inline;
+      }
+      if (apiKey !== SECRET_REDACTED) {
+        if (apiKey.length === 0) {
+          changes.push({
+            kind: "remove",
+            secretName: AUTO_MODEL_SECRET_NAME,
+            operation: "remove-secret",
+          });
+        } else {
+          changes.push({
+            kind: "write",
+            secretName: AUTO_MODEL_SECRET_NAME,
+            value: textEncoder.encode(apiKey),
+          });
+          autoModel.apiKey = SECRET_REDACTED;
+        }
+      }
+
       return {
         settings: {
           ...next,
           providerInstances: providerInstances as ServerSettings["providerInstances"],
           usageLimitSources: usageLimitSources as ServerSettings["usageLimitSources"],
           bitbucket,
+          autoModel,
         },
         changes,
       };

@@ -357,6 +357,7 @@ import { useProjectClone } from "../state/projectClones";
 import { projectCloneDisplayName, projectCloneProgressSummary } from "@t3tools/contracts";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
+  readThreadShell,
   useProject,
   useProjects,
   useThread,
@@ -371,6 +372,13 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { InlineNotesPanel } from "./chat/InlineNotesPanel";
+import {
+  buildInlineNotePrompt,
+  readInlineNotes,
+  writeInlineNotes,
+  type InlineNote,
+} from "~/lib/inlineNotes";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd, worktreeSetupAgentStarted } from "./chat/MessagesTimeline.logic";
 import { resolveComposerTimelineInset, resolveScrollToEndClearance } from "./composerFooterLayout";
@@ -1685,6 +1693,28 @@ export default function ChatView(props: ChatViewProps) {
     },
     [composerRef],
   );
+  const [inlineNotes, setInlineNotes] = useState<InlineNote[]>(() =>
+    readInlineNotes(environmentId, threadId),
+  );
+  const [pendingNoteCitation, setPendingNoteCitation] = useState<AssistantCitation | null>(null);
+  const [pendingNoteQuestion, setPendingNoteQuestion] = useState("");
+  const [noteFollowUpDrafts, setNoteFollowUpDrafts] = useState<Record<string, string>>({});
+  const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const openInlineNote = useCallback((id: string) => {
+    setPendingNoteCitation(null);
+    setPendingNoteQuestion("");
+    setActiveNoteId(id);
+    setNotesOpen(true);
+  }, []);
+  useEffect(() => {
+    setInlineNotes(readInlineNotes(environmentId, threadId));
+    setPendingNoteCitation(null);
+    setPendingNoteQuestion("");
+    setNoteFollowUpDrafts({});
+    setActiveNoteId(null);
+    setNotesOpen(false);
+  }, [environmentId, threadId]);
   const [isWorkspaceFileDragActive, setIsWorkspaceFileDragActive] = useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
@@ -3501,6 +3531,140 @@ export default function ChatView(props: ChatViewProps) {
     optimisticUserMessages,
     projectHandoffMessagePreviews,
   ]);
+  const parentInlineNotes = useMemo(
+    () =>
+      inlineNotes.filter(
+        (note) =>
+          note.citation.environmentId === environmentId && note.citation.threadId === threadId,
+      ),
+    [inlineNotes, environmentId, threadId],
+  );
+  const noteAgentAvailable = lockedProvider === "codex";
+  const selectNoteText = useCallback(
+    (citation: AssistantCitation): boolean => {
+      if (!noteAgentAvailable || !isServerThread) return false;
+      setPendingNoteCitation(citation);
+      setPendingNoteQuestion("");
+      setActiveNoteId(null);
+      setNotesOpen(true);
+      return true;
+    },
+    [noteAgentAvailable, isServerThread],
+  );
+  const createInlineNote = async (question: string): Promise<boolean> => {
+    if (!pendingNoteCitation || !activeThread || !activeProject || !noteAgentAvailable)
+      return false;
+    const citation = pendingNoteCitation;
+    const noteThreadId = newThreadId();
+    const noteTitle = truncate(`Note: ${question}`, 120);
+    const createdAt = new Date().toISOString();
+    const createResult = await createThread({
+      environmentId,
+      input: {
+        threadId: noteThreadId,
+        projectId: activeThread.projectId,
+        title: noteTitle,
+        modelSelection: activeThread.modelSelection,
+        runtimeMode,
+        interactionMode: "default",
+        branch: activeThread.branch,
+        worktreePath: activeThread.worktreePath,
+        createdAt,
+      },
+    });
+    if (createResult._tag === "Failure") {
+      toastManager.add({ type: "error", title: "Could not create note chat" });
+      return false;
+    }
+    const startResult = await startThreadTurn({
+      environmentId,
+      input: {
+        threadId: noteThreadId,
+        message: {
+          messageId: newMessageId(),
+          role: "user",
+          text: buildInlineNotePrompt({ citation, question, messages: timelineMessages }),
+          attachments: [],
+        },
+        modelSelection: activeThread.modelSelection,
+        titleSeed: noteTitle,
+        runtimeMode,
+        interactionMode: "default",
+        createdAt,
+      },
+    });
+    if (startResult._tag === "Failure") {
+      await deleteThread({ environmentId, input: { threadId: noteThreadId } });
+      toastManager.add({ type: "error", title: "Could not start note agent" });
+      return false;
+    }
+    const note: InlineNote = {
+      id: randomUUID(),
+      citation,
+      threadId: noteThreadId,
+      question,
+      createdAt,
+    };
+    const nextNotes = [...parentInlineNotes, note];
+    try {
+      writeInlineNotes(environmentId, threadId, nextNotes);
+    } catch {
+      toastManager.add({
+        type: "warning",
+        title: "Note chat started but its anchor could not be saved",
+      });
+    }
+    setInlineNotes(nextNotes);
+    setPendingNoteCitation(null);
+    setPendingNoteQuestion("");
+    setActiveNoteId(note.id);
+    return true;
+  };
+  const sendInlineNoteFollowUp = async (noteThreadId: ThreadId, text: string): Promise<boolean> => {
+    const note = parentInlineNotes.find((item) => item.threadId === noteThreadId);
+    if (!note || !activeThread) return false;
+    const createdAt = new Date().toISOString();
+    const noteThread = readThreadShell(scopeThreadRef(environmentId, noteThreadId));
+    if (noteThread && noteThread.runtimeMode !== runtimeMode) {
+      const modeResult = await setThreadRuntimeMode({
+        environmentId,
+        input: { threadId: noteThreadId, runtimeMode, createdAt },
+      });
+      if (modeResult._tag === "Failure") {
+        toastManager.add({ type: "error", title: "Could not update note permissions" });
+        return false;
+      }
+    }
+    const result = await startThreadTurn({
+      environmentId,
+      input: {
+        threadId: noteThreadId,
+        message: { messageId: newMessageId(), role: "user", text, attachments: [] },
+        modelSelection: activeThread.modelSelection,
+        titleSeed: `Note: ${note.question}`,
+        runtimeMode,
+        interactionMode: "default",
+        createdAt,
+      },
+    });
+    if (result._tag === "Failure") {
+      toastManager.add({ type: "error", title: "Could not send note follow-up" });
+      return false;
+    }
+    return true;
+  };
+  const respondToInlineNoteApproval = async (
+    noteThreadId: ThreadId,
+    requestId: ApprovalRequestId,
+    decision: ProviderApprovalDecision,
+  ): Promise<boolean> => {
+    if (!parentInlineNotes.some((note) => note.threadId === noteThreadId)) return false;
+    const result = await respondToThreadApproval({
+      environmentId,
+      input: { threadId: noteThreadId, requestId, decision },
+    });
+    return result._tag !== "Failure";
+  };
   const timelineProjectionRef = useRef<{
     threadKey: string | null;
     projection: TimelineEntriesProjection;
@@ -7226,6 +7390,7 @@ export default function ChatView(props: ChatViewProps) {
     sendCtx: ReturnType<ChatComposerHandle["getSendContext"]>,
   ): QueuedMessageSendSettings => ({
     modelSelection: sendCtx.selectedModelSelection,
+    ...(sendCtx.autoModelRouting ? { autoModelRouting: sendCtx.autoModelRouting } : {}),
     runtimeMode,
     interactionMode: sendCtx.interactionMode,
     promptEffort: resolvePromptInjectedEffort(
@@ -7438,6 +7603,7 @@ export default function ChatView(props: ChatViewProps) {
       selectedProviderModels: ctxSelectedProviderModels,
       selectedPromptEffort: ctxSelectedPromptEffort,
       selectedModelSelection: ctxSelectedModelSelection,
+      autoModelRouting: ctxAutoModelRouting,
       interactionMode: sendInteractionMode,
       interactionModeEnabled: sendInteractionModeEnabled,
     } = sendCtx;
@@ -8407,6 +8573,7 @@ export default function ChatView(props: ChatViewProps) {
             })(),
           },
           modelSelection: ctxSelectedModelSelection,
+          ...(ctxAutoModelRouting ? { autoModelRouting: ctxAutoModelRouting } : {}),
           titleSeed: title,
           runtimeMode,
           interactionMode: sendInteractionMode,
@@ -9776,7 +9943,7 @@ export default function ChatView(props: ChatViewProps) {
         </WorkspacePageHeader>
 
         {/* Main content area with optional plan sidebar */}
-        <div className="flex min-h-0 min-w-0 flex-1">
+        <div className="relative flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
           <div
             className="relative flex min-h-0 min-w-0 flex-1 flex-col"
@@ -9825,6 +9992,9 @@ export default function ChatView(props: ChatViewProps) {
                 {...(!paintOnlyDisplayedTimeline
                   ? {
                       onCiteAssistantText: citeAssistantText,
+                      ...(noteAgentAvailable ? { onNoteAssistantText: selectNoteText } : {}),
+                      noteMarkers: parentInlineNotes,
+                      onOpenNote: openInlineNote,
                       agentPanelModel,
                       onOpenAgents: addAgentsSurface,
                       onUseArtifactTemplate: useArtifactTemplate,
@@ -10230,6 +10400,50 @@ export default function ChatView(props: ChatViewProps) {
             ) : null}
           </div>
           {/* end chat column */}
+          {notesOpen && isServerThread ? (
+            <InlineNotesPanel
+              environmentId={environmentId}
+              notes={parentInlineNotes}
+              activeNoteId={activeNoteId}
+              pendingCitation={pendingNoteCitation}
+              question={pendingNoteQuestion}
+              onQuestionChange={setPendingNoteQuestion}
+              followUpDrafts={noteFollowUpDrafts}
+              onFollowUpDraftChange={(id, draft) =>
+                setNoteFollowUpDrafts((current) => ({ ...current, [id]: draft }))
+              }
+              cwd={activeProject?.workspaceRoot}
+              onSelect={(id) => {
+                setActiveNoteId(id);
+                setPendingNoteCitation(null);
+                setPendingNoteQuestion("");
+              }}
+              onClose={() => setNotesOpen(false)}
+              onCreate={createInlineNote}
+              onSend={sendInlineNoteFollowUp}
+              onRespondToApproval={respondToInlineNoteApproval}
+              onRemove={(id) => {
+                const remaining = parentInlineNotes.filter((note) => note.id !== id);
+                try {
+                  writeInlineNotes(environmentId, threadId, remaining);
+                  setInlineNotes(remaining);
+                  setActiveNoteId(null);
+                } catch {
+                  toastManager.add({ type: "error", title: "Could not remove annotation" });
+                }
+              }}
+            />
+          ) : (parentInlineNotes.length > 0 || pendingNoteCitation) && isServerThread ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="self-start m-2"
+              onClick={() => setNotesOpen(true)}
+            >
+              {parentInlineNotes.length > 0 ? `Notes (${parentInlineNotes.length})` : "New note"}
+            </Button>
+          ) : null}
         </div>
         {/* end horizontal flex container */}
 

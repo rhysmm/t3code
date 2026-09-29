@@ -447,6 +447,7 @@ describe("OrchestrationEngine", () => {
             Effect.succeed({ snapshotSequence: projectionSnapshot.snapshotSequence }),
           getCounts: () => Effect.succeed({ projectCount: 1, threadCount: 1 }),
           getEventReplayStats: () => Effect.die("unused"),
+          isActiveReviewWorkspacePath: () => Effect.succeed(false),
           getActiveProjectByWorkspaceRoot: () => Effect.succeedNone,
           getProjectShellById: () => Effect.succeedNone,
           getProjectShells: () => Effect.succeed([]),

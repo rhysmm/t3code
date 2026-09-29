@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { ScreenScrollView } from "../../components/ScreenScrollView";
 import { serverEnvironment } from "../../state/server";
@@ -18,6 +18,7 @@ import { ConnectionEnvironmentRow } from "../connection/ConnectionEnvironmentRow
 import { SettingsActionRow } from "./components/SettingsActionRow";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
+import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import {
   canMaintainEnvironment,
   canUpdateEnvironmentProvider,
@@ -52,6 +53,10 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
   const updateServer = useAtomCommand(serverEnvironment.updateServer);
   const updateProvider = useAtomCommand(serverEnvironment.updateProvider);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders);
+  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
+    label: "save Auto model settings",
+  });
+  const [autoKeyDraft, setAutoKeyDraft] = useState("");
   const [connectionExpanded, setConnectionExpanded] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const pendingRef = useRef(false);
@@ -139,6 +144,28 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
         },
       });
       if (AsyncResult.isFailure(result)) throw squashAtomCommandFailure(result);
+    });
+  }
+
+  function saveAutoModel(patch: { enabled?: boolean; apiKey?: string }) {
+    if (disabled) return;
+    void run("auto-model", async () => {
+      const result = await updateSettings({
+        environmentId,
+        input: { patch: { autoModel: patch } },
+      });
+      if (AsyncResult.isFailure(result)) throw squashAtomCommandFailure(result);
+      if (
+        (patch.enabled !== undefined && result.value.autoModel.enabled !== patch.enabled) ||
+        (patch.apiKey !== undefined &&
+          Boolean(result.value.autoModel.apiKey) !== Boolean(patch.apiKey))
+      ) {
+        throw new Error(
+          "This environment did not save the Auto setting. Restart or update its T3 server, then try again.",
+        );
+      }
+      if (patch.apiKey !== undefined) setAutoKeyDraft("");
+      setNotice("Auto model settings saved.");
     });
   }
 
@@ -252,6 +279,54 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       disabled={disabled}
                       loading={pending === "server" || running}
                       onPress={requestServerUpdate}
+                    />
+                  ) : null}
+                </SettingsSection>
+                <SettingsSection title="Auto model selection">
+                  <SettingsSwitchRow
+                    icon="brain"
+                    label="Enable Auto"
+                    subtitle="Use Jev to choose a model for each turn. Choose Quick and Deep models in the composer."
+                    value={config.settings.autoModel.enabled}
+                    disabled={disabled}
+                    onValueChange={(enabled) => saveAutoModel({ enabled })}
+                  />
+                  <View className="gap-3 border-t border-border-subtle p-4">
+                    <Text className="text-sm font-t3-medium text-foreground">TypeSafe API key</Text>
+                    <TextInput
+                      accessibilityLabel="TypeSafe API key"
+                      className="rounded-xl border border-border bg-background px-3 py-2 text-foreground"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      secureTextEntry
+                      placeholder={
+                        config.settings.autoModel.apiKey
+                          ? "Stored key; enter a new one to replace"
+                          : "Paste your key"
+                      }
+                      value={autoKeyDraft}
+                      editable={!disabled}
+                      onChangeText={setAutoKeyDraft}
+                    />
+                    <Text className="text-xs text-foreground-muted">
+                      {config.settings.autoModel.apiKey
+                        ? "A key is saved on this environment."
+                        : "The key stays on this environment. An existing TYPESAFE_API_KEY also works."}
+                    </Text>
+                  </View>
+                  <SettingsActionRow
+                    icon="checkmark"
+                    label="Save key and enable Auto"
+                    disabled={disabled || !autoKeyDraft.trim()}
+                    loading={pending === "auto-model"}
+                    onPress={() => saveAutoModel({ apiKey: autoKeyDraft.trim(), enabled: true })}
+                  />
+                  {config.settings.autoModel.apiKey ? (
+                    <SettingsActionRow
+                      icon="trash"
+                      label="Remove saved key"
+                      disabled={disabled}
+                      onPress={() => saveAutoModel({ apiKey: "" })}
                     />
                   ) : null}
                 </SettingsSection>

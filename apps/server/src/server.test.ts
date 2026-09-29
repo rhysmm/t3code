@@ -1046,6 +1046,7 @@ const buildAppUnderTest = (options?: {
               eventCount: Math.max(0, toSequenceInclusive - fromSequenceExclusive),
               payloadBytes: 0,
             }),
+          isActiveReviewWorkspacePath: () => Effect.succeed(false),
           getActiveProjectByWorkspaceRoot: () => Effect.succeedNone,
           getFirstActiveThreadIdByProjectId: () => Effect.succeedNone,
           getImportedAgentSessionSources: () => Effect.succeed([]),

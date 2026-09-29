@@ -129,6 +129,7 @@ import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { isInlineNoteThread, useInlineNoteThreadKeys } from "../hooks/useInlineNoteThreadKeys";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import {
@@ -2175,7 +2176,15 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
 export default function Sidebar() {
   const projects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
-  const threads = useThreadShells();
+  const allThreads = useThreadShells();
+  const inlineNoteThreadKeys = useInlineNoteThreadKeys();
+  const threads = useMemo(
+    () =>
+      allThreads.filter(
+        (thread) => !isInlineNoteThread(inlineNoteThreadKeys, thread.environmentId, thread.id),
+      ),
+    [allThreads, inlineNoteThreadKeys],
+  );
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);

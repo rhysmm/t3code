@@ -5,6 +5,7 @@ import {
   resolveAssistantCitationRange,
   type AssistantCitationSourceAnchor,
 } from "~/lib/assistantTextSelection";
+import type { InlineNote } from "~/lib/inlineNotes";
 import { toastManager } from "../ui/toast";
 
 const CITATION_PULSE_DURATION_MS = 650;
@@ -17,6 +18,34 @@ const CITATION_HIGHLIGHT_OPACITY = "--assistant-citation-highlight-opacity";
 // Matches the comment-editing highlight strength in index.css.
 const CITATION_HIGHLIGHT_PEAK = 0.45;
 const COMMENT_HIGHLIGHT_NAME = "t3-assistant-citation-comment";
+const EMPTY_NOTES: readonly InlineNote[] = [];
+
+export function inlineNoteAtPoint(
+  notes: readonly { id: string; range: Range }[],
+  x: number,
+  y: number,
+): string | null {
+  // The newest note wins when passages overlap.
+  for (let index = notes.length - 1; index >= 0; index -= 1) {
+    const note = notes[index]!;
+    const rects = note.range.getClientRects();
+    for (let rectIndex = 0; rectIndex < rects.length; rectIndex += 1) {
+      const rect = rects.item(rectIndex);
+      if (
+        rect &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        x >= rect.left &&
+        x <= rect.right &&
+        y >= rect.top &&
+        y <= rect.bottom
+      ) {
+        return note.id;
+      }
+    }
+  }
+  return null;
+}
 
 /** Keep source text marked while its comment editor is open, without changing native selection. */
 export function observeAssistantCitationCommentSource({
@@ -348,6 +377,8 @@ export function AssistantCitationSource({
   itemKey,
   request,
   listRef,
+  notes = EMPTY_NOTES,
+  onOpenNote,
   children,
 }: {
   messageId: MessageId;
@@ -355,9 +386,59 @@ export function AssistantCitationSource({
   itemKey: string;
   request: AssistantCitationTarget | null;
   listRef: RefObject<LegendListRef | null>;
+  notes?: readonly InlineNote[];
+  onOpenNote?: (id: string) => void;
   children: ReactNode;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || notes.length === 0) return;
+    const highlightName = "t3-assistant-note";
+    const registry = typeof CSS !== "undefined" ? CSS.highlights : undefined;
+    const highlight =
+      registry && typeof Highlight !== "undefined"
+        ? (registry.get(highlightName) ?? new Highlight())
+        : null;
+    if (highlight) registry?.set(highlightName, highlight);
+    let ranges: { id: string; range: Range }[] = [];
+    const refresh = () => {
+      for (const note of ranges) highlight?.delete(note.range);
+      ranges = notes.flatMap((note) => {
+        const range = resolveAssistantCitationRange(root, note.citation);
+        return range ? [{ id: note.id, range }] : [];
+      });
+      for (const note of ranges) highlight?.add(note.range);
+    };
+    const openClickedNote = (event: MouseEvent) => {
+      if (
+        !onOpenNote ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey ||
+        root.ownerDocument.getSelection()?.isCollapsed === false
+      )
+        return;
+      const noteId = inlineNoteAtPoint(ranges, event.clientX, event.clientY);
+      if (!noteId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onOpenNote(noteId);
+    };
+    refresh();
+    const observer = new MutationObserver(refresh);
+    observer.observe(root, { childList: true, characterData: true, subtree: true });
+    root.addEventListener("click", openClickedNote, true);
+    return () => {
+      observer.disconnect();
+      root.removeEventListener("click", openClickedNote, true);
+      for (const note of ranges) highlight?.delete(note.range);
+      if (highlight?.size === 0 && registry?.get(highlightName) === highlight)
+        registry.delete(highlightName);
+    };
+  }, [notes, onOpenNote]);
   useEffect(() => {
     const root = rootRef.current;
     const list = listRef.current;

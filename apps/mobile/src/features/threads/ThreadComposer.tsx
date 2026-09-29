@@ -9,6 +9,7 @@ import {
   type EnvironmentId,
   type MessageId,
   type ModelSelection,
+  type AutoModelRouting,
   type OrchestrationThreadShell,
   type ProviderInteractionMode,
   type RuntimeMode,
@@ -20,6 +21,11 @@ import {
   hasProviderUsageLimits,
   isUsageLimitsCommand,
 } from "@t3tools/shared/usageLimits";
+import {
+  canConfigureAutoModelSelections,
+  getAutoModelReasoningOption,
+  getModelSelectionStringOptionValue,
+} from "@t3tools/shared/model";
 import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { ReactNode } from "react";
 import {
@@ -90,6 +96,7 @@ import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
+import { AutoModelPicker } from "./AutoModelPicker";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
 import {
   ComposerDictationCancelAction,
@@ -131,6 +138,8 @@ export interface ThreadComposerProps {
   readonly connectionState: RemoteClientConnectionState;
   readonly environmentLabel: string | null;
   readonly selectedThread: OrchestrationThreadShell;
+  readonly selectedModelSelection: ModelSelection | null;
+  readonly autoModelRouting: AutoModelRouting | null;
   readonly hasCompactableConversation: boolean;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
@@ -150,6 +159,7 @@ export interface ThreadComposerProps {
   /** `/usage-limits` resolves locally; the host decides where the report shows. Null clears it. */
   readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
+  readonly onUpdateAutoModelRouting: (routing: AutoModelRouting | null) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
   readonly onExpandedChange?: (expanded: boolean) => void;
@@ -277,6 +287,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
   const [isFocused, setIsFocused] = useState(false);
+  const [autoPickerOpen, setAutoPickerOpen] = useState(false);
   const pendingPastedTextAttachmentCountRef = useRef(0);
   const [pendingPastedTextAttachmentCount, setPendingPastedTextAttachmentCount] = useState(0);
   const settingsSheetPresentation = useThreadSettingsSheetPresentation({
@@ -317,7 +328,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.connectionState !== "connected" || props.queueCount > 0 || attachmentsUploading
       ? "Queue"
       : "Send";
-  const currentModelSelection = props.selectedThread.modelSelection;
+  const currentModelSelection = props.selectedModelSelection ?? props.selectedThread.modelSelection;
   const currentRuntimeMode = props.selectedThread.runtimeMode;
   const modelUnavailable =
     props.connectionState === "connected" &&
@@ -325,11 +336,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const selectedProviderStatus = useMemo(() => {
     if (!props.serverConfig) return null;
     return (
-      props.serverConfig.providers.find(
-        (p) => p.instanceId === props.selectedThread.modelSelection.instanceId,
-      ) ?? null
+      props.serverConfig.providers.find((p) => p.instanceId === currentModelSelection.instanceId) ??
+      null
     );
-  }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  }, [props.serverConfig, currentModelSelection.instanceId]);
   const composerOwnerKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
   const openDraftDocument = (attachment: ComposerDocumentAttachment) => {
     Keyboard.dismiss();
@@ -536,6 +546,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         option.selection.instanceId === currentModelSelection.instanceId &&
         option.selection.model === currentModelSelection.model,
     ) ?? null;
+  const autoCurrentChoice = props.selectedThread.modelSelection;
+  const autoCurrentModel = modelOptions.find(
+    (option) =>
+      option.selection.instanceId === autoCurrentChoice.instanceId &&
+      option.selection.model === autoCurrentChoice.model,
+  );
+  const autoReasoning = getAutoModelReasoningOption(autoCurrentModel?.capabilities);
+  const autoLevel = autoReasoning?.choices.find(
+    (choice) =>
+      choice.id === getModelSelectionStringOptionValue(autoCurrentChoice, autoReasoning.id),
+  )?.label;
+  const autoCurrentLabel = `${autoCurrentModel?.label ?? autoCurrentChoice.model}${autoLevel ? ` · ${autoLevel}` : ""}`;
   const providerOptionDescriptors = useMemo(
     () =>
       resolveProviderOptionDescriptors({
@@ -973,6 +995,24 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                         onPress={openSettings}
                       />
                     </View>
+                    <ComposerInlineControl
+                      accessibilityLabel={
+                        props.autoModelRouting
+                          ? `Auto currently using ${autoCurrentLabel}. Configure automatic model selection`
+                          : "Configure automatic model selection"
+                      }
+                      disabled={
+                        selectedProviderStatus?.requiresNewThreadForModelChange === true ||
+                        !canConfigureAutoModelSelections(
+                          threadProviderGroups[0]?.models.filter((model) => !model.isUnavailable) ??
+                            [],
+                        )
+                      }
+                      label={props.autoModelRouting ? `Auto · ${autoCurrentLabel}` : "Auto"}
+                      selected={props.autoModelRouting !== null}
+                      showChevron={false}
+                      onPress={() => setAutoPickerOpen(true)}
+                    />
                   </View>
                 )}
                 <View className="shrink-0 flex-row items-center">
@@ -1008,6 +1048,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       </Animated.View>
 
       <VideoPreviewModal source={previewVideo} onRequestClose={closePreview} />
+      <AutoModelPicker
+        visible={autoPickerOpen}
+        available={props.serverConfig?.settings.autoModel.enabled ?? false}
+        keySaved={Boolean(props.serverConfig?.settings.autoModel.apiKey)}
+        routing={props.autoModelRouting}
+        currentModel={currentModelSelection}
+        models={modelOptions.filter(
+          (option) => option.selection.instanceId === currentModelSelection.instanceId,
+        )}
+        onChange={props.onUpdateAutoModelRouting}
+        onClose={() => setAutoPickerOpen(false)}
+      />
       <FilePreviewModal source={previewFile} onRequestClose={closePreview} />
     </Animated.View>
   );

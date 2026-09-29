@@ -11,6 +11,7 @@ import {
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type EnvironmentId,
   type ModelSelection,
+  type AutoModelRouting,
   type ProviderInteractionMode,
   type RuntimeMode,
   type ThreadId,
@@ -445,6 +446,7 @@ export function useThreadComposerState() {
       attachments,
       context: draft.context,
       modelSelection,
+      ...(draft.autoModelRouting ? { autoModelRouting: draft.autoModelRouting } : {}),
       runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
       interactionMode: resolveProviderInteractionMode(
         provider,
@@ -759,6 +761,7 @@ export function useThreadComposerState() {
       );
       updateComposerDraftSettings(selectedThreadKey, {
         modelSelection: value,
+        autoModelRouting: null,
         ...(provider?.showInteractionModeToggle === false
           ? { interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE }
           : {}),
@@ -773,6 +776,14 @@ export function useThreadComposerState() {
         return;
       }
       updateComposerDraftSettings(selectedThreadKey, { runtimeMode: value });
+    },
+    [selectedThreadKey],
+  );
+
+  const onUpdateAutoModelRouting = useCallback(
+    (routing: AutoModelRouting | null) => {
+      if (selectedThreadKey)
+        updateComposerDraftSettings(selectedThreadKey, { autoModelRouting: routing });
     },
     [selectedThreadKey],
   );
@@ -807,6 +818,7 @@ export function useThreadComposerState() {
     draftMessage,
     draftAttachments,
     modelSelection,
+    autoModelRouting: selectedDraft?.autoModelRouting ?? null,
     runtimeMode,
     interactionMode,
     onChangeDraftMessage,
@@ -818,6 +830,7 @@ export function useThreadComposerState() {
     onRemoveDraftImage,
     onSendMessage,
     onUpdateModelSelection,
+    onUpdateAutoModelRouting,
     onUpdateRuntimeMode,
     onUpdateInteractionMode,
   };

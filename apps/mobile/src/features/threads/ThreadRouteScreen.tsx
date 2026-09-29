@@ -1026,6 +1026,9 @@ function ThreadRouteContent(
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
+          selectedModelSelection={composer.modelSelection}
+          autoModelRouting={composer.autoModelRouting}
+          onUpdateAutoModelRouting={composer.onUpdateAutoModelRouting}
           onUpdateThreadRuntimeMode={composer.onUpdateRuntimeMode}
           onUpdateThreadInteractionMode={composer.onUpdateInteractionMode}
           onRespondToApproval={requests.onRespondToApproval}

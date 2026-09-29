@@ -191,6 +191,9 @@ export async function sendQueuedMessage(
           ...(context !== undefined && inlineContext ? { context } : {}),
         },
         modelSelection: sendSettings.modelSelection,
+        ...(sendSettings.autoModelRouting
+          ? { autoModelRouting: sendSettings.autoModelRouting }
+          : {}),
         runtimeMode: sendSettings.runtimeMode,
         interactionMode: sendSettings.interactionMode,
         createdAt,

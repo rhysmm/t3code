@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 
 import { ServerConfig } from "../config.ts";
+import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as ReviewService from "./ReviewService.ts";
@@ -14,8 +15,15 @@ function makeLayer(input: {
   readonly workspaceRoot: string;
   readonly baseDir: string;
   readonly detectCalls?: Array<{ readonly cwd: string }>;
+  readonly registeredCwds?: ReadonlyArray<string>;
 }) {
   return ReviewService.layer.pipe(
+    Layer.provide(
+      Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+        isActiveReviewWorkspacePath: (cwd) =>
+          Effect.succeed(input.registeredCwds?.includes(cwd) ?? false),
+      }),
+    ),
     Layer.provide(
       Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
         get: () => Effect.die("unexpected VCS registry get"),
@@ -105,6 +113,40 @@ describe("ReviewService", () => {
       assert.strictEqual(result.cwd, workspaceRoot);
       assert.deepStrictEqual(result.sources, []);
       assert.deepStrictEqual(detectCalls, [{ cwd: workspaceRoot }]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("uses registered project and thread worktree paths outside the server root", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-server-" });
+      const projectRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-project-" });
+      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-worktree-" });
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
+      const detectCalls: Array<{ readonly cwd: string }> = [];
+
+      const previews = yield* Effect.gen(function* () {
+        const review = yield* ReviewService.ReviewService;
+        return yield* Effect.all([
+          review.getDiffPreview({ cwd: projectRoot }),
+          review.getDiffPreview({ cwd: worktreePath }),
+        ]);
+      }).pipe(
+        Effect.provide(
+          makeLayer({
+            workspaceRoot,
+            baseDir,
+            detectCalls,
+            registeredCwds: [projectRoot, worktreePath],
+          }),
+        ),
+      );
+
+      assert.deepStrictEqual(
+        previews.map((preview) => preview.cwd),
+        [projectRoot, worktreePath],
+      );
+      assert.deepStrictEqual(detectCalls, [{ cwd: projectRoot }, { cwd: worktreePath }]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

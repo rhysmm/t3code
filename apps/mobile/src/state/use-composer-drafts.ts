@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   EnvironmentId as EnvironmentIdSchema,
+  AutoModelRouting as AutoModelRoutingSchema,
   ModelSelection as ModelSelectionSchema,
   ComposerContextId,
   ComposerContextRecord,
@@ -12,6 +13,7 @@ import {
   ProviderInteractionMode as ProviderInteractionModeSchema,
   RuntimeMode as RuntimeModeSchema,
   type EnvironmentId,
+  type AutoModelRouting,
   type ModelSelection,
   type ProjectId,
   type ProviderInteractionMode,
@@ -327,6 +329,7 @@ export interface ComposerDraft {
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly importedShareIds?: ReadonlyArray<string>;
   readonly modelSelection?: ModelSelection;
+  readonly autoModelRouting?: AutoModelRouting | null;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: ProviderInteractionMode;
   readonly workspaceSelection?: ComposerDraftWorkspaceSelection;
@@ -360,7 +363,12 @@ export interface ComposerDraftWorkspaceSelection {
 
 export type ComposerDraftSettingsUpdate = Pick<
   ComposerDraft,
-  "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceSelection" | "project"
+  | "modelSelection"
+  | "autoModelRouting"
+  | "runtimeMode"
+  | "interactionMode"
+  | "workspaceSelection"
+  | "project"
 >;
 
 const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
@@ -389,6 +397,7 @@ const ComposerDraftSchema = Schema.Struct({
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   importedShareIds: Schema.optional(Schema.Array(Schema.String)),
   modelSelection: Schema.optional(ModelSelectionSchema),
+  autoModelRouting: Schema.optional(Schema.NullOr(AutoModelRoutingSchema)),
   runtimeMode: Schema.optional(RuntimeModeSchema),
   interactionMode: Schema.optional(ProviderInteractionModeSchema),
   workspaceSelection: Schema.optional(ComposerDraftWorkspaceSelectionSchema),
@@ -544,6 +553,7 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.text.length === 0 &&
     draft.attachments.length === 0 &&
     draft.modelSelection === undefined &&
+    draft.autoModelRouting == null &&
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
     draft.workspaceSelection === undefined
@@ -1128,12 +1138,14 @@ export async function removeDeliveredCloudQueuedMessage(
     if (
       JSON.stringify([
         archived.modelSelection,
+        archived.autoModelRouting,
         archived.runtimeMode,
         archived.interactionMode,
         archived.creation,
       ]) !==
       JSON.stringify([
         message.modelSelection,
+        message.autoModelRouting,
         message.runtimeMode,
         message.interactionMode,
         message.creation,
@@ -1148,6 +1160,9 @@ export async function removeDeliveredCloudQueuedMessage(
         !sameDraftAttachmentIds(editor.attachments, message.attachments) ||
         (editor.modelSelection !== undefined &&
           JSON.stringify(editor.modelSelection) !== JSON.stringify(message.modelSelection)) ||
+        (editor.autoModelRouting !== undefined &&
+          JSON.stringify(editor.autoModelRouting) !==
+            JSON.stringify(message.autoModelRouting ?? null)) ||
         (editor.runtimeMode !== undefined && editor.runtimeMode !== message.runtimeMode) ||
         (editor.interactionMode !== undefined &&
           editor.interactionMode !== message.interactionMode) ||
@@ -1488,6 +1503,7 @@ export function clearComposerDraftContentState(
     importedShareIds: _importedShareIds,
     context: _context,
     modelSelection,
+    autoModelRouting,
     workspaceSelection,
     project: _project,
     ...retained
@@ -1495,6 +1511,7 @@ export function clearComposerDraftContentState(
   const draft = {
     ...retained,
     ...(options?.clearModelSelection || modelSelection === undefined ? {} : { modelSelection }),
+    ...(options?.clearModelSelection || autoModelRouting == null ? {} : { autoModelRouting }),
     ...(options?.clearWorkspaceSelection || workspaceSelection === undefined
       ? {}
       : { workspaceSelection }),
@@ -1676,6 +1693,7 @@ export function sameComposerDraftState(a: ComposerDraft, b: ComposerDraft): bool
     a.context === b.context &&
     a.importedShareIds === b.importedShareIds &&
     a.modelSelection === b.modelSelection &&
+    a.autoModelRouting === b.autoModelRouting &&
     a.runtimeMode === b.runtimeMode &&
     a.interactionMode === b.interactionMode &&
     a.workspaceSelection === b.workspaceSelection
@@ -1711,7 +1729,12 @@ export function undoComposerDraftMergeState(
   // A setting still holding the merge's value is the merge's doing: restore
   // the snapshot's. One the user changed since the merge stays theirs.
   const undoSetting = <
-    K extends "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceSelection",
+    K extends
+      | "modelSelection"
+      | "autoModelRouting"
+      | "runtimeMode"
+      | "interactionMode"
+      | "workspaceSelection",
   >(
     key: K,
   ): ComposerDraft[K] => (existing[key] === merged[key] ? snapshot[key] : existing[key]);
@@ -1729,6 +1752,7 @@ export function undoComposerDraftMergeState(
       (attachment) => !insertedAttachmentIds.has(attachment.id),
     ),
     modelSelection: undoSetting("modelSelection"),
+    autoModelRouting: undoSetting("autoModelRouting"),
     runtimeMode: undoSetting("runtimeMode"),
     interactionMode: undoSetting("interactionMode"),
     workspaceSelection: undoSetting("workspaceSelection"),

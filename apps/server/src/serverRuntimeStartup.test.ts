@@ -174,6 +174,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getEventReplayStats: () => Effect.die("unused"),
+        isActiveReviewWorkspacePath: () => Effect.succeed(false),
         getActiveProjectByWorkspaceRoot: () =>
           Effect.succeedSome({
             id: bootstrapProjectId,
@@ -304,6 +305,7 @@ it.effect.each([
         getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getEventReplayStats: () => Effect.die("unused"),
+        isActiveReviewWorkspacePath: () => Effect.succeed(false),
         getActiveProjectByWorkspaceRoot: () =>
           Effect.succeed(
             existing
@@ -392,6 +394,7 @@ it.effect(
           getSnapshotSequence: () => Effect.die("unused"),
           getCounts: () => Effect.die("unused"),
           getEventReplayStats: () => Effect.die("unused"),
+          isActiveReviewWorkspacePath: () => Effect.succeed(false),
           getActiveProjectByWorkspaceRoot: () => Effect.succeedNone,
           getProjectShells: () => Effect.die("unused"),
           getProjectShellById: () => Effect.die("unused"),
@@ -458,6 +461,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets preserves typed UUID generation fa
         getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getEventReplayStats: () => Effect.die("unused"),
+        isActiveReviewWorkspacePath: () => Effect.succeed(false),
         getActiveProjectByWorkspaceRoot: () => Effect.succeedNone,
         getProjectShells: () => Effect.die("unused"),
         getProjectShellById: () => Effect.die("unused"),

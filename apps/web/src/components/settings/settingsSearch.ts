@@ -577,6 +577,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow disable enable open drive preview tools sessions project override"],
   },
   {
+    id: "auto-model",
+    title: "Auto model selection",
+    to: "/settings/integrations",
+    scope: "environment",
+    searchTerms: ["jev typesafe api key automatic model routing quick deep"],
+  },
+  {
     id: "device-hosts",
     title: "Device hosts",
     to: "/settings/integrations",

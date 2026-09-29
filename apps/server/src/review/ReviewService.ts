@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
+import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
@@ -38,6 +39,7 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
 
   const canonicalizePath = (value: string) => {
     const resolvedPath = path.resolve(value);
@@ -77,13 +79,29 @@ export const make = Effect.gen(function* () {
       return;
     }
 
+    if (
+      yield* snapshots.isActiveReviewWorkspacePath(cwd).pipe(
+        Effect.mapError(
+          (cause) =>
+            new VcsRepositoryDetectionError({
+              operation,
+              cwd,
+              detail: "Failed to check the registered review workspace.",
+              cause,
+            }),
+        ),
+      )
+    ) {
+      return;
+    }
+
     return yield* new VcsRepositoryDetectionError({
       operation,
       cwd,
       detail:
         operation === "ReviewService.getDiffPreview"
-          ? "Review diff preview cwd must stay within the configured workspace root."
-          : "Review diff file contents cwd must stay within the configured workspace root.",
+          ? "Review diff preview cwd must stay within the configured workspace root or a registered project."
+          : "Review diff file contents cwd must stay within the configured workspace root or a registered project.",
     });
   });
 
