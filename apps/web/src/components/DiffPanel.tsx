@@ -6,10 +6,13 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
   CHECKPOINT_DIFF_TRUNCATED_MARKER,
   type ReviewBranchCommitsResult,
+  type ReviewDiffPreviewInput,
   type ScopedThreadRef,
   type RunId,
 } from "@t3tools/contracts";
@@ -44,6 +47,8 @@ import {
   resolveToolCallDiffTarget,
   selectThreadBranchBaseRef,
   selectThreadDiffPanelSelection,
+  selectThreadReviewCheckouts,
+  type ReviewCheckout,
   useDiffPanelSessionStore,
   useDiffPanelStore,
 } from "../diffPanelStore";
@@ -75,6 +80,7 @@ import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./Dif
 import { DiffStatLabel } from "./chat/DiffStatLabel";
 import { AnnotatableCodeView, type AnnotatableCodeViewHandle } from "./diffs/AnnotatableCodeView";
 import { DiffFileTree } from "./diffs/DiffFileTree";
+import { AddDiffCheckout, DiffCheckoutGroup, liveCheckoutDiffInput } from "./diffs/DiffCheckouts";
 import { FileExplorerPane } from "./files/FileExplorerPane";
 import { diffFileTreeEntries } from "./diffs/diffFileTree.logic";
 import { getDiffHeaderClickAction } from "./diffs/diffHeaderClick";
@@ -260,7 +266,21 @@ export default function DiffPanel({
         }
       : null,
   );
-  const activeCwd = activeThread?.worktreePath ?? activeProject?.workspaceRoot;
+  const threadCwd = activeThread?.worktreePath ?? activeProject?.workspaceRoot;
+  const checkoutThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
+  const [checkoutFocus, setCheckoutFocus] = useState<{
+    threadKey: string | null;
+    cwd: string | null;
+    filePath?: string;
+    revealId: number;
+  } | null>(null);
+  const [externalBaseRefs, setExternalBaseRefs] = useState<Record<string, string | null>>({});
+  const [refreshRevision, setRefreshRevision] = useState<number>(0);
+  const selectedCheckoutFocus =
+    checkoutFocus?.threadKey === checkoutThreadKey ? checkoutFocus : null;
+  const storedCheckouts = useDiffPanelStore((state) =>
+    selectThreadReviewCheckouts(state, routeThreadRef),
+  );
   const serverConfig = useAtomValue(
     serverEnvironment.configValueAtom(activeThread?.environmentId ?? null),
   );
@@ -271,14 +291,14 @@ export default function DiffPanel({
   );
   const getDiffFileContents = useAtomCommand(reviewEnvironment.diffFileContents);
   const gitStatusQuery = useEnvironmentQuery(
-    activeThread !== null && activeThread !== undefined && activeCwd != null
+    activeThread !== null && activeThread !== undefined && threadCwd != null
       ? vcsEnvironment.status({
           environmentId: activeThread.environmentId,
-          input: { cwd: activeCwd },
+          input: { cwd: threadCwd },
         })
       : null,
   );
-  const activeRepositoryRoot =
+  const threadRepositoryRoot =
     gitStatusQuery.data?.workingTree.rootPath ??
     (activeThread?.worktreePath ? undefined : activeProject?.repositoryIdentity?.rootPath);
   const diffSelection = useDiffPanelStore((state) =>
@@ -288,13 +308,42 @@ export default function DiffPanel({
     selectThreadBranchBaseRef(state, routeThreadRef),
   );
   const toolCallSelection = diffSelection.kind === "tool-call" ? diffSelection : null;
-  // Turn and git diffs name files from the repository root; a tool call's diff names them as
-  // its provider recorded them, absolute or relative to the workspace.
-  const diffPathRepositoryRoot = toolCallSelection ? undefined : activeRepositoryRoot;
   const isGitSelection =
     diffSelection.kind === "branch" ||
     diffSelection.kind === "unstaged" ||
     diffSelection.kind === "commit";
+  const isLiveGitSelection = diffSelection.kind === "branch" || diffSelection.kind === "unstaged";
+  const primaryCheckoutPaths = [threadCwd, threadRepositoryRoot].flatMap((path) =>
+    path ? [normalizeProjectPathForComparison(path)] : [],
+  );
+  const reviewCheckouts = storedCheckouts.filter(
+    ({ cwd }) => !primaryCheckoutPaths.includes(normalizeProjectPathForComparison(cwd)),
+  );
+  const threadIsGitRepo = gitStatusQuery.data?.isRepo ?? true;
+  const selectedCheckout = isLiveGitSelection
+    ? (reviewCheckouts.find(({ cwd }) => cwd === selectedCheckoutFocus?.cwd) ??
+      (threadIsGitRepo ? undefined : reviewCheckouts[0]))
+    : undefined;
+  const selectedCheckoutProject = useProject(
+    selectedCheckout && activeThread
+      ? { environmentId: activeThread.environmentId, projectId: selectedCheckout.projectId }
+      : null,
+  );
+  const activeCwd = selectedCheckout?.cwd ?? threadCwd;
+  const activeCheckoutBaseKey = selectedCheckout
+    ? JSON.stringify([checkoutThreadKey, selectedCheckout.cwd])
+    : null;
+  const reviewRevision = refreshRevision
+    ? JSON.stringify([workspaceMutationId, refreshRevision])
+    : workspaceMutationId;
+  const selectLiveCheckout = (checkout?: ReviewCheckout, filePath?: string) => {
+    setCheckoutFocus((previous) => ({
+      threadKey: checkoutThreadKey,
+      cwd: checkout?.cwd ?? null,
+      ...(filePath !== undefined ? { filePath } : {}),
+      revealId: (previous?.revealId ?? 0) + 1,
+    }));
+  };
   const toolCallItems = useQuietThreadVisibleTurnItems(toolCallSelection ? routeThreadRef : null);
   const toolCallDetail = useTurnItemDetail(
     toolCallSelection && routeThreadRef
@@ -305,7 +354,7 @@ export default function DiffPanel({
       : null,
   );
   const toolCallItem = toolCallDetail.data?.item;
-  const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
+  const isGitRepo = threadIsGitRepo || selectedCheckout !== undefined;
   const turnDiffSummaries = useThreadCheckpointSummaries(routeThreadRef);
   const orderedTurnDiffSummaries = turnDiffSummaries.toSorted((left, right) => {
     if (left.checkpointTurnCount !== right.checkpointTurnCount) {
@@ -329,13 +378,24 @@ export default function DiffPanel({
       ? diffSelection.kind
       : "branch";
   const selectedCommitSha = diffSelection.kind === "commit" ? diffSelection.sha : null;
+  const baseRefForCheckout = (checkout: ReviewCheckout) =>
+    externalBaseRefs[JSON.stringify([checkoutThreadKey, checkout.cwd])] ?? null;
   const selectedBaseRef =
     diffSelection.kind === "branch" || diffSelection.kind === "commit"
-      ? diffSelection.baseRef
+      ? selectedCheckout
+        ? baseRefForCheckout(selectedCheckout)
+        : diffSelection.baseRef
       : null;
-  const selectedFilePath = diffSelection.kind === "turn" ? (diffSelection.filePath ?? null) : null;
+  const liveFilePath =
+    isLiveGitSelection && (selectedCheckoutFocus?.cwd ?? null) === (selectedCheckout?.cwd ?? null)
+      ? (selectedCheckoutFocus?.filePath ?? null)
+      : null;
+  const selectedFilePath =
+    diffSelection.kind === "turn" ? (diffSelection.filePath ?? null) : liveFilePath;
   const selectedFileRevealRequestId =
-    diffSelection.kind === "turn" ? diffSelection.revealRequestId : 0;
+    diffSelection.kind === "turn"
+      ? diffSelection.revealRequestId
+      : (selectedCheckoutFocus?.revealId ?? 0);
   const selectedTurn =
     selectedRunId === null
       ? undefined
@@ -350,8 +410,11 @@ export default function DiffPanel({
       : selectedCommitSha !== null
         ? `commit:${selectedCommitSha}`
         : selectedGitScope;
+  const scopedReviewSectionId = selectedCheckout
+    ? JSON.stringify([reviewSectionId, selectedCheckout.cwd])
+    : reviewSectionId;
   const collapseScopeKey = routeThreadRef
-    ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}:${reviewSectionId}`
+    ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}:${scopedReviewSectionId}`
     : null;
   const codeViewMountKey = collapseScopeKey ?? reviewSectionId;
   const selectedCheckpointRange =
@@ -372,23 +435,24 @@ export default function DiffPanel({
     },
     { enabled: isGitRepo && selectedTurn !== undefined },
   );
-  const branchDiffPreviewInput =
+  const sourceKind = selectedGitScope === "unstaged" ? "working-tree" : "branch-range";
+  const branchDiffPreviewInput: ReviewDiffPreviewInput | undefined =
     canReadFiles && isGitSelection && activeThread && activeCwd
-      ? {
-          cwd: activeCwd,
-          ...(selectedBaseRef ? { baseRef: selectedBaseRef } : {}),
-          ...(selectedCommitSha !== null ? { commitSha: selectedCommitSha } : {}),
-          ignoreWhitespace: diffIgnoreWhitespace,
-          metadataOnly: true,
-          ...(selectedCommitSha === null
-            ? {
-                sourceKind:
-                  selectedGitScope === "unstaged"
-                    ? ("working-tree" as const)
-                    : ("branch-range" as const),
-              }
-            : {}),
-        }
+      ? selectedCommitSha === null
+        ? liveCheckoutDiffInput({
+            cwd: activeCwd,
+            ...(selectedCheckout ? { checkoutProjectId: selectedCheckout.projectId } : {}),
+            baseRef: selectedBaseRef,
+            ignoreWhitespace: diffIgnoreWhitespace,
+            sourceKind,
+          })
+        : {
+            cwd: activeCwd,
+            ...(selectedBaseRef ? { baseRef: selectedBaseRef } : {}),
+            commitSha: selectedCommitSha,
+            ignoreWhitespace: diffIgnoreWhitespace,
+            metadataOnly: true,
+          }
       : undefined;
   const canRefreshGitDiff =
     isGitRepo && isGitSelection && activeThread != null && activeCwd != null;
@@ -401,17 +465,17 @@ export default function DiffPanel({
             environmentId: activeThread.environmentId,
             input: branchDiffPreviewInput,
           }),
-          canRefreshGitDiff ? workspaceMutationId : undefined,
+          canRefreshGitDiff ? reviewRevision : undefined,
         )
       : null,
     messages,
   );
   const branchCommitsQuery = useEnvironmentQuery(
-    visible && isGitRepo && canReadFiles && activeThread && activeCwd
+    visible && threadIsGitRepo && canReadFiles && activeThread && threadCwd
       ? reviewEnvironment.branchCommits({
           environmentId: activeThread.environmentId,
           input: {
-            cwd: activeCwd,
+            cwd: threadCwd,
             ...(rememberedBaseRef ? { baseRef: rememberedBaseRef } : {}),
           },
         })
@@ -432,7 +496,10 @@ export default function DiffPanel({
           ? "commit"
           : "branch-range"),
   );
-  const comparisonHeadRef = selectedGitSource?.headRef ?? gitStatusQuery.data?.refName ?? "HEAD";
+  const comparisonHeadRef =
+    selectedGitSource?.headRef ??
+    (selectedCheckout ? undefined : gitStatusQuery.data?.refName) ??
+    "HEAD";
   const comparisonBaseRef =
     selectedGitSource?.baseRef ??
     selectedBaseRef ??
@@ -477,9 +544,21 @@ export default function DiffPanel({
     void openLink(url, { event });
   };
   const refreshPreviewQuery = branchDiffPreview.refresh;
-  const refreshDiffFromUserAction = refreshPreviewQuery;
+  const refreshDiffFromUserAction = () => {
+    if (isLiveGitSelection && reviewCheckouts.length > 0) {
+      setRefreshRevision((revision) => revision + 1);
+    } else {
+      refreshPreviewQuery();
+    }
+  };
 
   const preview = branchDiffPreview.data;
+  // Tool diffs use paths recorded by the provider. Git diffs use paths relative to each checkout.
+  const diffPathRepositoryRoot = toolCallSelection
+    ? undefined
+    : selectedCheckout
+      ? (preview?.cwd ?? selectedCheckout.cwd)
+      : threadRepositoryRoot;
   const gitDiff = selectedGitSource?.diff;
 
   const toolCallPreview =
@@ -556,6 +635,7 @@ export default function DiffPanel({
       ? createGitDiffFileContentsLoader(getDiffFileContents, {
           environmentId: activeThread.environmentId,
           cwd: preview.cwd,
+          ...(selectedCheckout ? { checkoutProjectId: selectedCheckout.projectId } : {}),
           sourceKind: selectedGitSource.kind,
           baseRef: selectedGitSource.baseRef,
           headRef: selectedGitSource.headRef,
@@ -569,7 +649,8 @@ export default function DiffPanel({
     return currentLoadDiffFiles(fileDiff);
   });
   const canSelectBranchBase = canReadFiles && canRefreshGitDiff && selectedGitScope === "branch";
-  const branchRefsCwd = branchDiffPreview.data?.cwd ?? activeCwd;
+  const branchRefsCwd =
+    selectedCheckoutProject?.workspaceRoot ?? branchDiffPreview.data?.cwd ?? activeCwd;
   const localBranchRefs = useEnvironmentQuery(
     canSelectBranchBase && activeThread && branchRefsCwd
       ? vcsEnvironment.listRefs({
@@ -632,7 +713,7 @@ export default function DiffPanel({
     preview: renderablePatch,
   });
   const refreshBranchDiffPreview = refreshPreviewQuery;
-  const diffRefreshKey = `diff:${activeThreadRefreshKey ?? ""}`;
+  const diffRefreshKey = `diff:${activeThreadRefreshKey ?? ""}:${activeCwd ?? ""}`;
 
   // The panel stays mounted while hidden, and edits made outside T3 Code bump no mutation id, so
   // showing it revalidates the diff; that also stands in for focus events missed while hidden.
@@ -758,7 +839,7 @@ export default function DiffPanel({
 
   const openDiffFile = (filePath: string) => {
     openDiffFilePrimaryAction({
-      threadRef: routeThreadRef,
+      threadRef: selectedCheckout ? null : routeThreadRef,
       filePath,
       activeCwd,
       repositoryRoot: diffPathRepositoryRoot,
@@ -820,7 +901,11 @@ export default function DiffPanel({
   };
   const selectBranchBaseRef = (baseRef: string | null) => {
     if (!routeThreadRef) return;
-    useDiffPanelStore.getState().selectBranchBaseRef(routeThreadRef, baseRef);
+    if (activeCheckoutBaseKey) {
+      setExternalBaseRefs((current) => ({ ...current, [activeCheckoutBaseKey]: baseRef }));
+    } else {
+      useDiffPanelStore.getState().selectBranchBaseRef(routeThreadRef, baseRef);
+    }
   };
   const selectedTurnValue = selectedTurn ? `turn:${selectedTurn.runId}` : "";
   const selectedCommitValue = selectedCommitSha !== null ? `commit:${selectedCommitSha}` : "";
@@ -1200,6 +1285,17 @@ export default function DiffPanel({
             layout="inline"
           />
         ) : null}
+        {isLiveGitSelection && canReadFiles && activeThread && routeThreadRef && (
+          <AddDiffCheckout
+            key={checkoutThreadKey}
+            environmentId={activeThread.environmentId}
+            projectId={activeThread.projectId}
+            excludedPaths={[...primaryCheckoutPaths, ...reviewCheckouts.map(({ cwd }) => cwd)]}
+            onAdd={(checkout) =>
+              useDiffPanelStore.getState().addReviewCheckout(routeThreadRef, checkout)
+            }
+          />
+        )}
         {canRefreshGitDiff && (
           <Tooltip>
             <TooltipTrigger
@@ -1384,6 +1480,60 @@ export default function DiffPanel({
         )
       ) : (
         <>
+          {isLiveGitSelection && routeThreadRef && reviewCheckouts.length > 0 && (
+            <section
+              aria-label={gt("All checkouts")}
+              className="max-h-[40%] shrink-0 overflow-y-auto border-b border-border"
+            >
+              <h2 className="sticky top-0 z-10 border-b border-border/60 bg-background px-3 py-1.5 text-xs font-medium">
+                <T>All checkouts</T>
+              </h2>
+              <ul>
+                {threadCwd && threadIsGitRepo && (
+                  <DiffCheckoutGroup
+                    key={threadCwd}
+                    environmentId={activeThread.environmentId}
+                    label={activeProject?.title ?? ""}
+                    input={liveCheckoutDiffInput({
+                      cwd: threadCwd,
+                      baseRef: rememberedBaseRef,
+                      sourceKind,
+                      ignoreWhitespace: diffIgnoreWhitespace,
+                    })}
+                    workspaceMutationId={reviewRevision}
+                    visible={visible}
+                    hideTestFiles={hideTestFiles}
+                    selected={selectedCheckout === undefined}
+                    onSelect={(filePath) => selectLiveCheckout(undefined, filePath)}
+                  />
+                )}
+                {reviewCheckouts.map((checkout) => (
+                  <DiffCheckoutGroup
+                    key={checkout.cwd}
+                    environmentId={activeThread.environmentId}
+                    label={checkout.label}
+                    input={liveCheckoutDiffInput({
+                      cwd: checkout.cwd,
+                      checkoutProjectId: checkout.projectId,
+                      baseRef: baseRefForCheckout(checkout),
+                      sourceKind,
+                      ignoreWhitespace: diffIgnoreWhitespace,
+                    })}
+                    workspaceMutationId={reviewRevision}
+                    visible={visible}
+                    hideTestFiles={hideTestFiles}
+                    selected={selectedCheckout?.cwd === checkout.cwd}
+                    onSelect={(filePath) => selectLiveCheckout(checkout, filePath)}
+                    onRemove={() =>
+                      useDiffPanelStore
+                        .getState()
+                        .removeReviewCheckout(routeThreadRef, checkout.cwd)
+                    }
+                  />
+                ))}
+              </ul>
+            </section>
+          )}
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
             {preview?.incomplete && (
               <p className="shrink-0 border-b border-border/70 bg-muted/40 px-3 py-1.5 text-2xs text-muted-foreground">
@@ -1494,7 +1644,7 @@ export default function DiffPanel({
                   <AnnotatableCodeView
                     key={collapseScopeKey ?? reviewSectionId}
                     environmentId={activeThread?.environmentId}
-                    projectId={activeThread?.projectId}
+                    projectId={selectedCheckout?.projectId ?? activeThread?.projectId}
                     viewerRef={attachCodeView}
                     onScroll={codeViewScroll.onScroll}
                     codeViewKey={codeViewMountKey}
@@ -1502,8 +1652,12 @@ export default function DiffPanel({
                     files={codeViewFiles}
                     pendingFiles={pendingFiles}
                     renderCodeViewFooter={renderLoadingBoundary}
-                    sectionId={reviewSectionId}
-                    sectionTitle={reviewSectionTitle}
+                    sectionId={scopedReviewSectionId}
+                    sectionTitle={
+                      selectedCheckout
+                        ? `${reviewSectionTitle} · ${selectedCheckout.cwd}`
+                        : reviewSectionTitle
+                    }
                     composerDraftTarget={composerDraftTarget}
                     renderHeaderFilenameSuffix={(fileDiff) => {
                       const path = resolveFileDiffPath(fileDiff);

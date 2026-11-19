@@ -311,7 +311,7 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
           icon="text.bubble"
           label={gt("Review changes")}
           description={gt("Inspect changes, uncommitted edits, and turn diffs")}
-          disabled={busy || !isRepo}
+          disabled={busy}
           onPress={() => {
             const params = { environmentId, threadId };
             if (presentation === "sheet") {

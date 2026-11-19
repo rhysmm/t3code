@@ -4,7 +4,7 @@ import {
   checkpointFileTotals,
   type ThreadCheckpointSummary,
 } from "@t3tools/client-runtime/state/thread-checkpoints";
-import type { ReviewDiffPreviewSource } from "@t3tools/contracts";
+import type { ReviewDiffPreviewInput, ReviewDiffPreviewSource } from "@t3tools/contracts";
 import { quoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
@@ -13,9 +13,11 @@ import { msg } from "gt-react-native";
 
 import { m, type MessageResolver } from "../../i18n/messages";
 
-export type ReviewSectionKind = "turn" | "working-tree" | "branch-range";
+export type LiveReviewSectionKind = "working-tree" | "branch-range";
+export type ReviewSectionKind = "turn" | LiveReviewSectionKind;
 
-const CHANGES_SECTION_ID = "git:branch-range";
+export const CHANGES_SECTION_ID = "git:branch-range";
+const WORKING_TREE_SECTION_ID = "git:working-tree";
 const CHANGES_TITLE = msg("Changes", { $context: "diff section: branch changes" });
 const UNCOMMITTED_SUBTITLE = msg("Staged, unstaged, and untracked files");
 
@@ -29,6 +31,7 @@ export interface ReviewSectionItem {
   readonly files?: ReviewDiffPreviewSource["files"];
   readonly truncated?: boolean;
   readonly source?: ReviewDiffPreviewSource;
+  readonly previewInput?: ReviewDiffPreviewInput;
 }
 
 export interface ReviewRenderableHunkRow {
@@ -534,6 +537,7 @@ export function buildReviewSectionItems(input: {
   readonly gitSections: ReadonlyArray<ReviewDiffPreviewSource>;
   readonly turnDiffById: Readonly<Record<string, string | undefined>>;
   readonly loadingGitSections: boolean;
+  readonly hasAdditionalCheckouts?: boolean;
   readonly resolve?: MessageResolver;
 }): ReadonlyArray<ReviewSectionItem> {
   const resolve = input.resolve ?? m;
@@ -553,37 +557,53 @@ export function buildReviewSectionItems(input: {
 
   const gitItems = input.gitSections
     .filter(
-      (section): section is typeof section & { kind: ReviewSectionKind } =>
+      (section): section is typeof section & { kind: LiveReviewSectionKind } =>
         section.kind !== "commit",
     )
-    .map<ReviewSectionItem>((section) => ({
-      id: `git:${section.kind}`,
-      kind: section.kind,
-      title: section.title,
-      subtitle: gitSubtitle(section, resolve),
-      diff: section.diff,
-      source: section,
-      ...(section.files ? { files: section.files } : {}),
-      truncated: section.truncated,
-      isLoading: false,
-    }));
+    .map((section) => buildReviewGitSectionItem(section, resolve));
   const hasChangesItem = gitItems.some((item) => item.id === CHANGES_SECTION_ID);
-  const visibleGitItems =
-    input.loadingGitSections && !hasChangesItem
-      ? [
-          {
-            id: CHANGES_SECTION_ID,
-            kind: "branch-range",
-            title: resolve(CHANGES_TITLE),
-            subtitle: null,
-            diff: null,
-            isLoading: true,
-          } satisfies ReviewSectionItem,
-          ...gitItems,
-        ]
-      : gitItems;
+  if ((input.loadingGitSections || input.hasAdditionalCheckouts) && !hasChangesItem) {
+    gitItems.unshift({
+      id: CHANGES_SECTION_ID,
+      kind: "branch-range",
+      title: resolve(CHANGES_TITLE),
+      subtitle: null,
+      diff: null,
+      isLoading: input.loadingGitSections,
+    });
+  }
+  if (
+    input.hasAdditionalCheckouts &&
+    !gitItems.some((item) => item.id === WORKING_TREE_SECTION_ID)
+  ) {
+    gitItems.push({
+      id: WORKING_TREE_SECTION_ID,
+      kind: "working-tree",
+      title: resolve(msg("Uncommitted", { $context: "diff section: working tree" })),
+      subtitle: null,
+      diff: null,
+      isLoading: input.loadingGitSections,
+    });
+  }
 
-  return [...turnItems, ...visibleGitItems];
+  return [...turnItems, ...gitItems];
+}
+
+export function buildReviewGitSectionItem(
+  section: ReviewDiffPreviewSource & { kind: LiveReviewSectionKind },
+  resolve: MessageResolver,
+): ReviewSectionItem {
+  return {
+    id: `git:${section.kind}`,
+    kind: section.kind,
+    title: section.title,
+    subtitle: gitSubtitle(section, resolve),
+    diff: section.diff,
+    source: section,
+    ...(section.files ? { files: section.files } : {}),
+    truncated: section.truncated,
+    isLoading: false,
+  };
 }
 
 export function getDefaultReviewSectionId(
