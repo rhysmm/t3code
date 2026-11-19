@@ -1,7 +1,8 @@
 import type { ThreadStructureVisibleTurnItem } from "@t3tools/client-runtime/state/shell";
 import { turnItemDetailRevision } from "@t3tools/client-runtime/work-log/item-detail";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { RunId, ScopedThreadRef, ThreadId, TurnItemId } from "@t3tools/contracts";
+import type { ProjectId, RunId, ScopedThreadRef, ThreadId, TurnItemId } from "@t3tools/contracts";
+import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
@@ -22,9 +23,20 @@ export type DiffPanelSelection =
 
 const DEFAULT_SELECTION: DiffPanelSelection = { kind: "branch", baseRef: null };
 
+export interface ReviewCheckout {
+  readonly cwd: string;
+  readonly projectId: ProjectId;
+  readonly label: string;
+}
+
+const EMPTY_CHECKOUTS: ReadonlyArray<ReviewCheckout> = [];
+
 interface DiffPanelStoreState {
   byThreadKey: Record<string, DiffPanelSelection>;
   branchBaseRefByThreadKey: Record<string, string | null>;
+  reviewCheckoutsByThreadKey: Record<string, ReadonlyArray<ReviewCheckout>>;
+  addReviewCheckout: (ref: ScopedThreadRef, checkout: ReviewCheckout) => void;
+  removeReviewCheckout: (ref: ScopedThreadRef, cwd: string) => void;
   selectGitScope: (ref: ScopedThreadRef, scope: "branch" | "unstaged") => void;
   selectBranchBaseRef: (ref: ScopedThreadRef, baseRef: string | null) => void;
   selectToolCall: (ref: ScopedThreadRef, target: ToolCallDiffTarget) => void;
@@ -54,6 +66,38 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
     (set) => ({
       byThreadKey: {},
       branchBaseRefByThreadKey: {},
+      reviewCheckoutsByThreadKey: {},
+      addReviewCheckout: (ref, checkout) =>
+        set((state) => {
+          const key = scopedThreadKey(ref);
+          const checkouts = state.reviewCheckoutsByThreadKey[key] ?? EMPTY_CHECKOUTS;
+          const path = normalizeProjectPathForComparison(checkout.cwd);
+          if (checkouts.some(({ cwd }) => normalizeProjectPathForComparison(cwd) === path)) {
+            return state;
+          }
+          return {
+            reviewCheckoutsByThreadKey: {
+              ...state.reviewCheckoutsByThreadKey,
+              [key]: [...checkouts, checkout],
+            },
+          };
+        }),
+      removeReviewCheckout: (ref, cwd) =>
+        set((state) => {
+          const key = scopedThreadKey(ref);
+          const checkouts = state.reviewCheckoutsByThreadKey[key]?.filter(
+            (checkout) => checkout.cwd !== cwd,
+          );
+          if (!checkouts) return state;
+          if (checkouts.length === 0) {
+            const { [key]: _removed, ...reviewCheckoutsByThreadKey } =
+              state.reviewCheckoutsByThreadKey;
+            return { reviewCheckoutsByThreadKey };
+          }
+          return {
+            reviewCheckoutsByThreadKey: { ...state.reviewCheckoutsByThreadKey, [key]: checkouts },
+          };
+        }),
       selectGitScope: (ref, scope) =>
         set((state) => {
           const threadKey = scopedThreadKey(ref);
@@ -145,13 +189,19 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
       removeThread: (ref) =>
         set((state) => {
           const threadKey = scopedThreadKey(ref);
-          if (!(threadKey in state.byThreadKey) && !(threadKey in state.branchBaseRefByThreadKey)) {
+          if (
+            !(threadKey in state.byThreadKey) &&
+            !(threadKey in state.branchBaseRefByThreadKey) &&
+            !(threadKey in state.reviewCheckoutsByThreadKey)
+          ) {
             return state;
           }
           const { [threadKey]: _removed, ...byThreadKey } = state.byThreadKey;
           const { [threadKey]: _removedBaseRef, ...branchBaseRefByThreadKey } =
             state.branchBaseRefByThreadKey;
-          return { byThreadKey, branchBaseRefByThreadKey };
+          const { [threadKey]: _removedCheckouts, ...reviewCheckoutsByThreadKey } =
+            state.reviewCheckoutsByThreadKey;
+          return { byThreadKey, branchBaseRefByThreadKey, reviewCheckoutsByThreadKey };
         }),
     }),
     {
@@ -163,10 +213,18 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
       partialize: (state) => ({
         byThreadKey: state.byThreadKey,
         branchBaseRefByThreadKey: state.branchBaseRefByThreadKey,
+        reviewCheckoutsByThreadKey: state.reviewCheckoutsByThreadKey,
       }),
     },
   ),
 );
+
+export function selectThreadReviewCheckouts(
+  state: DiffPanelStoreState,
+  ref: ScopedThreadRef | null,
+): ReadonlyArray<ReviewCheckout> {
+  return (ref && state.reviewCheckoutsByThreadKey[scopedThreadKey(ref)]) || EMPTY_CHECKOUTS;
+}
 
 interface DiffPanelSessionStoreState {
   collapsedFileKeysByScopeKey: Record<string, ReadonlySet<string>>;

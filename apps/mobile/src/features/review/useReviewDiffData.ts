@@ -132,7 +132,8 @@ export function useReviewDiffData(input: {
   const { draftMessage, draftContext, selectedSection, threadKey } = input;
   const selectedSectionId = selectedSection?.id ?? null;
   const source = selectedSection?.source;
-  const lazySource = source?.truncated && source.files ? source : null;
+  const lazySource =
+    source?.files?.length && (source.truncated || source.patchesDeferred) ? source : null;
   const previewDiff: ReviewParsedDiff = lazySource
     ? { kind: "empty" }
     : getCachedReviewParsedDiff({
@@ -142,7 +143,14 @@ export function useReviewDiffData(input: {
       });
   const registry = useContext(RegistryContext);
   const { environmentId, cwd } = input;
-  const scope = JSON.stringify([environmentId, cwd, lazySource?.kind, source?.baseRef]);
+  const previewInput = selectedSection?.previewInput;
+  const scope = JSON.stringify([
+    environmentId,
+    cwd,
+    lazySource?.kind,
+    source?.baseRef,
+    previewInput,
+  ]);
   const [requested, setRequested] = useState({ scope, indices: [0, 1, 2] });
   const indices = useMemo(
     () => new Set(requested.scope === scope ? requested.indices : [0, 1, 2]),
@@ -159,9 +167,10 @@ export function useReviewDiffData(input: {
                   input: {
                     cacheKey: scope,
                     // Newer preview revisions refresh patches read under an older one.
-                    preview: { cwd },
+                    preview: previewInput ?? { cwd },
                     request: {
                       cwd,
+                      ...previewInput,
                       ...(lazySource.baseRef ? { baseRef: lazySource.baseRef } : {}),
                       file: {
                         path: file.path,
@@ -173,7 +182,7 @@ export function useReviewDiffData(input: {
                 })
               : null,
           ),
-    [environmentId, cwd, lazySource, indices, scope],
+    [environmentId, cwd, lazySource, indices, previewInput, scope],
   );
   const parsedQuery = useMemo(
     () =>

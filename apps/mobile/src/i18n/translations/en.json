@@ -30,5 +30,16 @@
   "79b768229c9ef672": "Maintenance",
   "54b188d65247e42f": "Labs",
   "f41ea186c275b56e": "About",
-  "2a546119bf3879ee": "Archive"
+  "2a546119bf3879ee": "Archive",
+  "006fab820cc5a2f1": "Load more",
+  "ee90d50efb2fe9fb": "Loading diff…",
+  "afaf1bc8535e0adf": "Open diff",
+  "323793c598edeb57": "No changes",
+  "be0dfc27bc5afbc4": "Review checkouts",
+  "cf224d2479b3d70c": "Included checkouts",
+  "e91a39ca1b5d9bbd": "Project checkout",
+  "50a2e9caf06e2a76": "Filter worktrees by branch",
+  "62ceb9cd5a339f51": "Loading branches...",
+  "9fb9cdab3edf9d74": "No matching worktrees",
+  "573ea5fdf293a9d6": "All checkouts"
 }

@@ -1,10 +1,11 @@
 import * as Schema from "effect/Schema";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { GitCommandError } from "./git.ts";
 import { VcsError } from "./vcs.ts";
 
 export const ReviewDiffPreviewInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
+  checkoutProjectId: Schema.optionalKey(ProjectId),
   baseRef: Schema.optional(TrimmedNonEmptyString),
   commitSha: Schema.optional(TrimmedNonEmptyString),
   ignoreWhitespace: Schema.optionalKey(Schema.Boolean),
@@ -82,6 +83,7 @@ export type ReviewDiffPreviewSource = typeof ReviewDiffPreviewSource.Type;
 
 export const ReviewDiffFileContentsInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
+  checkoutProjectId: Schema.optionalKey(ProjectId),
   sourceKind: ReviewDiffPreviewSourceKind,
   changeType: ReviewDiffChangeType,
   baseRef: Schema.NullOr(TrimmedNonEmptyString),

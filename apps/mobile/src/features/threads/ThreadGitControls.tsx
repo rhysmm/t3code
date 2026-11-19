@@ -331,7 +331,7 @@ export function useThreadGitMenuDefinition(props: ThreadGitMenuProps): AppBarMen
         id: "git-review",
         title: "Review changes",
         icon: "text.bubble",
-        disabled: !model.isRepo || props.hasThread === false,
+        disabled: props.hasThread === false,
         subtitle:
           props.hasThread === false
             ? "Available after the first message"

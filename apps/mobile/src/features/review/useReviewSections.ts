@@ -37,6 +37,7 @@ export function useReviewSections(input: {
   readonly environmentId?: EnvironmentId;
   readonly threadId?: ThreadId;
   readonly reviewCache: ReviewCacheForThread;
+  readonly hasAdditionalCheckouts?: boolean;
 }) {
   const { environmentId, reviewCache, threadId } = input;
   const enabled = input.enabled ?? true;
@@ -87,6 +88,9 @@ export function useReviewSections(input: {
       canReadFiles || fileAccess.isPending ? (diffPreview.data?.sources ?? lastGitSections) : [],
     turnDiffById: reviewTurnDiffsBySectionId(readyCheckpoints, lastTurnDiffs),
     loadingGitSections: fileAccess.isPending || diffPreview.isPending,
+    hasAdditionalCheckouts: Boolean(
+      input.hasAdditionalCheckouts && (canReadFiles || fileAccess.isPending),
+    ),
   });
   const selectedSectionId = resolveReviewSelectedSectionId(
     cachedSections,
@@ -142,6 +146,8 @@ export function useReviewSections(input: {
   };
 
   return {
+    canReadFiles,
+    gitError: diffPreview.error,
     error:
       diffPreview.error ??
       activeTurnDiff.error ??

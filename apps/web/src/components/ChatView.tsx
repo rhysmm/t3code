@@ -1223,6 +1223,7 @@ export default function ChatView(props: ChatViewProps) {
       activeProject,
       environmentById.get(activeProject.environmentId)?.serverConfig?.scratchWorkspaceRoot ?? null,
     );
+  const diffAvailable = isServerThread && activeProject !== null && !activeProjectIsScratch;
   const logicalProjectEnvironments = useLogicalProjectEnvironments(
     activeProject,
     activeProjectIsScratch && draftId !== null,
@@ -2418,7 +2419,7 @@ export default function ChatView(props: ChatViewProps) {
     threadPanelPresentation,
     isServerThread,
     embedded,
-    isGitRepo,
+    diffAvailable,
     browserAvailable,
     canOperatePreview,
     diffOpen,
@@ -4040,7 +4041,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddSideChat={sideChatsOffered ? openSideChatStable : undefined}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
-          diffAvailable={isServerThread && isGitRepo}
+          diffAvailable={diffAvailable}
           filesAvailable={activeProject !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
           pullRequestsAvailable={pullRequestsSurfaceAvailable}

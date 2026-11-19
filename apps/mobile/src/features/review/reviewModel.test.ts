@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyReviewDiffMetadata,
   buildReviewParsedDiff,
+  buildReviewSectionItems,
   resolveReviewSelectedSectionId,
   type ReviewSectionItem,
 } from "./reviewModel";
@@ -29,6 +30,19 @@ describe("resolveReviewSelectedSectionId", () => {
   it("shows the default while the picked section loads and returns to the pick once it does", () => {
     expect(resolveReviewSelectedSectionId([changes], "turn:2")).toBe("git:branch-range");
     expect(resolveReviewSelectedSectionId([turn, changes], "turn:2")).toBe("turn:2");
+  });
+
+  it("opens either live scope when only an additional checkout has a diff", () => {
+    const sections = buildReviewSectionItems({
+      checkpoints: [],
+      gitSections: [],
+      turnDiffById: {},
+      loadingGitSections: false,
+      hasAdditionalCheckouts: true,
+    });
+
+    expect(resolveReviewSelectedSectionId(sections, null)).toBe("git:branch-range");
+    expect(resolveReviewSelectedSectionId(sections, "git:working-tree")).toBe("git:working-tree");
   });
 });
 
