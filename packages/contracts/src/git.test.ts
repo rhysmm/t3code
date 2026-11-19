@@ -80,6 +80,7 @@ describe("Git file paths", () => {
       encode: encodeReviewDiffFileContentsInput,
       input: {
         cwd: "/repo",
+        checkoutProjectId: "project-1",
         sourceKind: "working-tree",
         changeType: "rename-changed",
         baseRef: "HEAD",

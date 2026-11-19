@@ -1528,7 +1528,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
   });
 
-  const readGitCommonDir = Effect.fn("readGitCommonDir")(function* (cwd: string) {
+  const readGitCommonDir = Effect.fn("readGitCommonDir")(function* (
+    cwd: string,
+    { requireRealPath = false } = {},
+  ) {
     // Git reports relative paths from the physical cwd, which can differ from a symlink.
     const commonDirResult = yield* executeGitWithStableDiagnostics(
       "GitVcsDriver.resolveRepositoryPaths.commonDir",
@@ -1564,7 +1567,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       : path.resolve(physicalCwd, commonDirOutput);
     return yield* fileSystem
       .realPath(resolvedGitCommonDir)
-      .pipe(Effect.orElseSucceed(() => resolvedGitCommonDir));
+      .pipe(Effect.orElseSucceed(() => (requireRealPath ? null : resolvedGitCommonDir)));
   });
 
   const readWorktreeRoot = Effect.fn("readWorktreeRoot")(function* (cwd: string) {
@@ -6307,6 +6310,37 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ),
     );
 
+  const isLinkedWorktree = Effect.fn("GitVcsDriver.isLinkedWorktree")(function* (
+    projectCwd: string,
+    canonicalCwd: string,
+  ) {
+    const listedPaths = yield* listWorktreePaths(projectCwd);
+    const listed = yield* Effect.findFirst(listedPaths, (listedPath) =>
+      fileSystem.realPath(listedPath).pipe(
+        Effect.map((realPath) => path.relative(realPath, canonicalCwd) === ""),
+        Effect.orElseSucceed(() => false),
+      ),
+    );
+    if (Option.isNone(listed)) return false;
+
+    // A stale registration may point at a different repository now.
+    const [projectGitDir, checkoutGitDir, worktreeRoot] = yield* Effect.all(
+      [
+        readGitCommonDir(projectCwd, { requireRealPath: true }),
+        readGitCommonDir(canonicalCwd, { requireRealPath: true }),
+        readWorktreeRoot(canonicalCwd),
+      ],
+      { concurrency: 3 },
+    );
+    return (
+      worktreeRoot !== null &&
+      path.relative(worktreeRoot, canonicalCwd) === "" &&
+      projectGitDir !== null &&
+      checkoutGitDir !== null &&
+      path.relative(projectGitDir, checkoutGitDir) === ""
+    );
+  });
+
   const withListRefsInvalidation = <A, E>(
     cwd: string,
     effect: Effect.Effect<A, E>,
@@ -6459,5 +6493,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }),
     listLocalBranchNames,
     listWorktreePaths,
+    isLinkedWorktree,
   });
 });

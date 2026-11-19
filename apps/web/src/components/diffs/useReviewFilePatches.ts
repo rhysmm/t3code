@@ -199,6 +199,9 @@ function reviewFileQueries({
                 ...(previewInput ? { preview: previewInput } : {}),
                 request: {
                   cwd,
+                  ...(previewInput?.checkoutProjectId
+                    ? { checkoutProjectId: previewInput.checkoutProjectId }
+                    : {}),
                   ...(baseRef ? { baseRef } : {}),
                   ...(source.kind === "commit" ? { commitSha: source.id } : {}),
                   ignoreWhitespace,

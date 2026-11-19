@@ -1,8 +1,11 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 import { ProjectId } from "@t3tools/contracts";
 
@@ -12,6 +15,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as KnownWorkspaces from "../workspace/KnownWorkspaces.ts";
 import * as ReviewService from "./ReviewService.ts";
 
@@ -24,8 +28,23 @@ function layer(input: {
   readonly projectRoots?: ReadonlyArray<string> | "unavailable";
   readonly threadWorktrees?: ReadonlyArray<{ worktreePath: string; deleted?: boolean }>;
   readonly gitWorktrees?: ReadonlyArray<string>;
+  readonly realGit?: boolean;
 }) {
   const projectRoots = input.projectRoots ?? [];
+  const listProjects: ProjectStore.ProjectStoreV2["Service"]["listShells"] = () =>
+    projectRoots === "unavailable"
+      ? Effect.fail(new ProjectStore.ProjectStoreV2Error({ operation: "list", cause: "offline" }))
+      : Effect.succeed(
+          projectRoots.map((workspaceRoot, index) => ({
+            id: ProjectId.make(`project-${index}`),
+            title: `Project ${index}`,
+            workspaceRoot,
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          })),
+        );
   return ReviewService.layer.pipe(
     Layer.provide(KnownWorkspaces.layer),
     Layer.provide(
@@ -50,39 +69,34 @@ function layer(input: {
     ),
     Layer.provide(
       Layer.mock(ProjectStore.ProjectStoreV2)({
-        listShells: () =>
-          projectRoots === "unavailable"
-            ? Effect.fail(
-                new ProjectStore.ProjectStoreV2Error({ operation: "list", cause: "offline" }),
-              )
-            : Effect.succeed(
-                projectRoots.map((workspaceRoot, index) => ({
-                  id: ProjectId.make(`project-${index}`),
-                  title: `Project ${index}`,
-                  workspaceRoot,
-                  defaultModelSelection: null,
-                  scripts: [],
-                  createdAt: "2026-01-01T00:00:00.000Z",
-                  updatedAt: "2026-01-01T00:00:00.000Z",
-                })),
-              ),
+        listShells: listProjects,
+        getShell: (projectId) =>
+          listProjects().pipe(
+            Effect.map((projects) =>
+              Option.fromUndefinedOr(projects.find((project) => project.id === projectId)),
+            ),
+          ),
       }),
     ),
     Layer.provide(
-      Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
-        get: () => Effect.die("unexpected VCS registry get"),
-        resolve: () => Effect.die("unexpected VCS registry resolve"),
-        detect: (request) =>
-          Effect.sync(() => {
-            input.detectCalls?.push({ cwd: request.cwd });
-            return null;
+      input.realGit
+        ? VcsDriverRegistry.layer
+        : Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+            get: () => Effect.die("unexpected VCS registry get"),
+            resolve: () => Effect.die("unexpected VCS registry resolve"),
+            detect: (request) =>
+              Effect.sync(() => {
+                input.detectCalls?.push({ cwd: request.cwd });
+                return null;
+              }),
           }),
-      }),
     ),
-    Layer.provide(
-      Layer.mock(GitVcsDriver.GitVcsDriver)({
-        listWorktreePaths: () => Effect.succeed([...(input.gitWorktrees ?? [])]),
-      }),
+    Layer.provideMerge(
+      input.realGit
+        ? GitVcsDriver.layer
+        : Layer.mock(GitVcsDriver.GitVcsDriver)({
+            listWorktreePaths: () => Effect.succeed([...(input.gitWorktrees ?? [])]),
+          }),
     ),
     Layer.provide(
       ServerSettings.ServerSettingsService.layerTest({
@@ -90,8 +104,9 @@ function layer(input: {
         previousWorktreesDirectories: [...(input.previousWorktreesDirectories ?? [])],
       }),
     ),
+    Layer.provide(VcsProcess.layer),
     Layer.provide(ServerConfig.layerTest(input.workspaceRoot, input.baseDir)),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
   );
 }
 
@@ -257,6 +272,81 @@ describe("ReviewService", () => {
         ),
       );
       assert.strictEqual(result.cwd, checkout);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("reviews an exact linked checkout outside the known workspaces", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped();
+      const baseDir = yield* fs.makeTempDirectoryScoped();
+      const project = yield* fs.makeTempDirectoryScoped();
+      const checkouts = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const cwd = path.join(checkouts, "linked");
+      const nested = path.join(cwd, "nested");
+      const ordinary = path.join(project, "ordinary");
+      const replaced = path.join(checkouts, "replaced");
+      const checkoutProjectId = ProjectId.make("project-0");
+
+      yield* Effect.gen(function* () {
+        const git = yield* GitVcsDriver.GitVcsDriver;
+        const executeGit = (cwd: string, args: readonly string[]) =>
+          git.execute({ operation: "ReviewService.test.git", cwd, args });
+        yield* executeGit(project, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(project, "README.md"), "before\n");
+        yield* executeGit(project, ["add", "README.md"]);
+        yield* executeGit(project, [
+          "-c",
+          "user.name=Test",
+          "-c",
+          "user.email=test@example.com",
+          "commit",
+          "--no-gpg-sign",
+          "-m",
+          "initial",
+        ]);
+        yield* executeGit(project, ["worktree", "add", "-b", "feature", cwd]);
+        yield* fs.writeFileString(path.join(cwd, "README.md"), "after\n");
+        yield* fs.makeDirectory(nested);
+        yield* fs.makeDirectory(ordinary);
+        yield* executeGit(project, ["worktree", "add", "--detach", replaced]);
+        yield* fs.remove(path.join(replaced, ".git"));
+        yield* executeGit(replaced, ["init"]);
+        assert.include(yield* git.listWorktreePaths(project), replaced);
+
+        const review = yield* ReviewService.ReviewService;
+        const preview = yield* review.getDiffPreview({
+          cwd,
+          checkoutProjectId,
+          sourceKind: "working-tree",
+        });
+        assert.include(preview.sources[0]?.diff, "+after");
+        const file = yield* review.getDiffFileContents({
+          cwd,
+          checkoutProjectId,
+          sourceKind: "working-tree",
+          changeType: "change",
+          baseRef: "HEAD",
+          headRef: null,
+          oldPath: "README.md",
+          newPath: "README.md",
+        });
+        assert.deepStrictEqual(file, { oldContents: "before\n", newContents: "after\n" });
+
+        for (const input of [
+          { cwd },
+          { cwd: nested, checkoutProjectId },
+          { cwd: ordinary, checkoutProjectId },
+          { cwd: replaced, checkoutProjectId },
+          { cwd, checkoutProjectId: ProjectId.make("missing") },
+        ]) {
+          const failure = yield* review.getDiffPreview(input).pipe(Effect.flip);
+          assert.strictEqual(failure._tag, "VcsRepositoryDetectionError");
+        }
+      }).pipe(
+        Effect.provide(layer({ workspaceRoot, baseDir, projectRoots: [project], realGit: true })),
+      );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

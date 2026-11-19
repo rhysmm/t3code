@@ -1,10 +1,11 @@
-import { EnvironmentId, ThreadId, TurnItemId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId, TurnItemId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   resolveToolCallDiffTarget,
+  selectThreadReviewCheckouts,
   useDiffPanelSessionStore,
   useDiffPanelStore,
 } from "./diffPanelStore";
@@ -14,6 +15,7 @@ describe("diffPanelStore", () => {
     useDiffPanelStore.setState({
       byThreadKey: {},
       branchBaseRefByThreadKey: {},
+      reviewCheckoutsByThreadKey: {},
     });
     useDiffPanelSessionStore.setState({ collapsedFileKeysByScopeKey: {} });
   });
@@ -37,6 +39,34 @@ describe("diffPanelStore", () => {
       kind: "branch",
       baseRef: null,
     });
+  });
+
+  it("keeps exact linked checkouts separate and removes them with their thread", () => {
+    const environmentId = EnvironmentId.make("env");
+    const ref = { environmentId, threadId: ThreadId.make("thread") };
+    const other = { environmentId, threadId: ThreadId.make("other") };
+    const checkout = {
+      projectId: ProjectId.make("project"),
+      cwd: "/code/feature",
+      label: "Feature",
+    };
+    const second = { ...checkout, cwd: "/code/feature-two" };
+    const store = useDiffPanelStore.getState();
+
+    store.addReviewCheckout(ref, checkout);
+    store.addReviewCheckout(ref, { ...checkout, cwd: "/code/feature/" });
+    store.addReviewCheckout(ref, second);
+    store.addReviewCheckout(other, second);
+    expect(selectThreadReviewCheckouts(useDiffPanelStore.getState(), ref)).toEqual([
+      checkout,
+      second,
+    ]);
+
+    store.removeReviewCheckout(ref, checkout.cwd);
+    expect(selectThreadReviewCheckouts(useDiffPanelStore.getState(), ref)).toEqual([second]);
+    store.removeThread(ref);
+    expect(selectThreadReviewCheckouts(useDiffPanelStore.getState(), ref)).toEqual([]);
+    expect(selectThreadReviewCheckouts(useDiffPanelStore.getState(), other)).toEqual([second]);
   });
 
   it("refreshes a live tool-call target when its source item completes", () => {
