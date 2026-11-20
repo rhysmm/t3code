@@ -285,6 +285,9 @@ const sweptStorages = new WeakSet<ListAnswerStorage>();
 const listScopeKey = ({ projectIds: _projectIds, ...scope }: PullRequestListInput) =>
   `${LIST_SCOPE_KEY_PREFIX}${JSON.stringify(scope)}`;
 
+const usesAdvancedAuthorFilter = ({ filters }: PullRequestListInput) =>
+  filters?.authors !== undefined || filters?.authorTeam !== undefined;
+
 function readListScope(storage: ListAnswerStorage | undefined, key: string) {
   let raw: string | null = null;
   try {
@@ -319,6 +322,7 @@ export function rememberPullRequestListAnswer(
   const { input } = target;
   if (storage === undefined || input.query !== undefined || input.cursors !== undefined) return;
   if (input.limit !== undefined && input.limit > LIST_ANSWER_MAX_ENTRIES) return;
+  if (usesAdvancedAuthorFilter(input) && answer.authorFilterStatus === undefined) return;
   const key = listScopeKey(input);
   try {
     sweepLegacySnapshots(storage);
@@ -373,7 +377,10 @@ export function restorePullRequestList(
     const answer = scope[target.environmentId];
     if (answer !== undefined) answers.push([target.environmentId, answer]);
   }
-  const merged = mergePullRequestLists(answers);
+  const merged = mergePullRequestLists(
+    answers,
+    targets.some(({ input }) => usesAdvancedAuthorFilter(input)),
+  );
   if (merged === null) return null;
   // Answers kept before the projects were reassigned between environments can overlap.
   const seen = new Set<string>();
@@ -775,7 +782,10 @@ export function usePullRequestHostList(
   targets: ReadonlyArray<EnvironmentQueryTarget<PullRequestListInput>>,
 ): MergedPullRequestListView {
   const query = usePullRequestHostListsQuery(targets);
-  const data = mergePullRequestLists(query.values);
+  const data = mergePullRequestLists(
+    query.values,
+    targets.some(({ input }) => usesAdvancedAuthorFilter(input)),
+  );
   return {
     data,
     error: query.error,
@@ -811,6 +821,7 @@ export function usePullRequestFilterOptions(
   return {
     labels: query.values.flatMap(([, options]) => options.labels),
     authors: query.values.flatMap(([, options]) => options.authors),
+    teams: query.values.flatMap(([, options]) => options.teams ?? []),
     references: query.values.flatMap(([, options]) => options.references),
     error: query.error,
     isPending: query.isPending,

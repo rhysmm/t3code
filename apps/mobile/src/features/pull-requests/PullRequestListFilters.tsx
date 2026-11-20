@@ -1,6 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { sortProjectsByGroupOrder } from "@t3tools/client-runtime/state/project-grouping";
-import type { ScopedProjectRef, SidebarProjectGroupingMode } from "@t3tools/contracts";
+import {
+  MAX_PULL_REQUEST_AUTHOR_FILTERS,
+  type ScopedProjectRef,
+  type SidebarProjectGroupingMode,
+} from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { Platform, ScrollView } from "react-native";
 import type { MenuProps } from "../../components/ui/Menu.types";
@@ -9,7 +13,16 @@ import { environmentProjects } from "../../state/projects";
 import { environmentThreadShells } from "../../state/threads";
 import { useMobileProjectGroupingSettings } from "../../state/project-grouping";
 import { buildHomeProjectScopes, sortHomeProjectScopes } from "../home/homeThreadList";
-import { DEFAULT_PR_LIST_CONTROLS, type PullRequestListControls } from "./pullRequestList";
+import { useGT } from "gt-react-native";
+import {
+  DEFAULT_PR_LIST_CONTROLS,
+  pullRequestAuthorKey,
+  pullRequestFilterChoices,
+  pullRequestTeamLabel,
+  selectedPullRequestAuthors,
+  togglePullRequestAuthor,
+  type PullRequestListControls,
+} from "./pullRequestList";
 
 const STATES = { open: "Open", closed: "Closed", merged: "Merged", all: "All states" } as const;
 const INVOLVEMENT = { all: "All PRs", reviewing: "Your review", authored: "By you" } as const;
@@ -113,14 +126,17 @@ export function usePullRequestListFilters(props: {
   /** Dot colors by lowercased label name, for the labels that have one. */
   readonly labelColors: Readonly<Record<string, string>>;
   readonly projects: readonly { id: string; title: string; environmentId: string }[];
-  /** Opens a picker that searches the host, for a label or author no loaded row carries. */
-  readonly onSearch: (kind: "labels" | "authors") => void;
+  readonly onSearch: (kind: "labels" | "authors" | "teams") => void;
 }) {
+  const gt = useGT();
   const { value } = props;
   const projects = useProjectsInSidebarOrder(props.projects);
   const selectedLabels = value.filters.labels?.flat() ?? [];
   const selectedLabelSet = new Set(selectedLabels);
-  const author = value.filters.author;
+  const selectedAuthors = selectedPullRequestAuthors(value.filters).map(pullRequestAuthorKey);
+  const authorTeam = value.filters.authorTeam;
+  const authorCount = selectedAuthors.length + Number(authorTeam !== undefined);
+  const teamLabel = authorTeam && pullRequestTeamLabel(authorTeam);
   const select = (event: string) => {
     let selection: unknown;
     try {
@@ -184,10 +200,24 @@ export function usePullRequestListFilters(props: {
         props.onChange({ ...value, filters: { ...value.filters, labels: undefined } });
         break;
       case "author":
-        props.onChange({ ...value, filters: { ...value.filters, author: next || undefined } });
+        props.onChange({ ...value, filters: togglePullRequestAuthor(value.filters, next) });
+        break;
+      case "authors":
+        props.onChange({
+          ...value,
+          filters: {
+            ...value.filters,
+            author: undefined,
+            authors: undefined,
+            authorTeam: undefined,
+          },
+        });
+        break;
+      case "authorTeam":
+        props.onChange({ ...value, filters: { ...value.filters, authorTeam: undefined } });
         break;
       case "search":
-        if (next === "labels" || next === "authors") props.onSearch(next);
+        if (next === "labels" || next === "authors" || next === "teams") props.onSearch(next);
         break;
       case "draft":
         props.onChange({
@@ -224,7 +254,7 @@ export function usePullRequestListFilters(props: {
   const count =
     Number(value.state !== "open") +
     Number(value.involvement !== "all") +
-    Number(Boolean(author)) +
+    authorCount +
     selectedLabels.length +
     Number(Boolean(value.filters.draft)) +
     Number(Boolean(value.filters.review)) +
@@ -278,9 +308,12 @@ export function usePullRequestListFilters(props: {
     },
   });
   const labels = [...new Set([...selectedLabels, ...props.labels])].slice(0, 60);
-  const authors = [
-    ...new Set([...(author && author !== "me" ? [author] : []), ...props.authors]),
-  ].slice(0, 60);
+  const authors = pullRequestFilterChoices({
+    selected: ["me", ...selectedAuthors],
+    suggestions: props.authors.map(pullRequestAuthorKey),
+    hosted: [],
+    query: "",
+  }).slice(0, 60);
   const environmentActions = choices(
     "environment",
     Object.fromEntries([
@@ -305,16 +338,27 @@ export function usePullRequestListFilters(props: {
     }),
   ];
   const authorActions: MenuProps["actions"] = [
-    { id: id("search", "authors"), title: "Search authors…", image: "magnifyingglass" },
-    ...choices(
-      "author",
-      Object.fromEntries([
-        ["", "All authors"],
-        ["me", "Me"],
-        ...authors.map((login) => [login, login]),
-      ]),
-      author ?? "",
-    ),
+    { id: id("search", "authors"), title: gt("Search authors…"), image: "magnifyingglass" },
+    { id: id("search", "teams"), title: gt("Search GitHub teams…"), image: "person.2" },
+    {
+      id: id("authors", ""),
+      title: gt("All authors"),
+      state: authorCount ? "off" : "on",
+    },
+    ...(teamLabel
+      ? [{ id: id("authorTeam", ""), title: teamLabel, state: "on" as const, image: "person.2" }]
+      : []),
+    ...authors.map((login) => {
+      const selected = selectedAuthors.includes(login);
+      return {
+        id: id("author", login),
+        title: login === "me" ? gt("Me") : login,
+        state: selected ? ("on" as const) : ("off" as const),
+        attributes: {
+          disabled: !selected && selectedAuthors.length >= MAX_PULL_REQUEST_AUTHOR_FILTERS,
+        },
+      };
+    }),
   ];
   const customized = count > 0 || value.sort !== "updated" || props.environmentId !== null;
   // The Android header's filter button opens every filter.
@@ -326,7 +370,7 @@ export function usePullRequestListFilters(props: {
             { id: "state", title: "State", subactions: stateActions },
             { id: "involvement", title: "Involvement", subactions: involvementActions },
             { id: "labels", title: "Labels", subactions: labelActions },
-            { id: "author", title: "Author", subactions: authorActions },
+            { id: "author", title: gt("Authors"), subactions: authorActions },
             ...more,
             reset(true),
           ],
@@ -352,7 +396,13 @@ export function usePullRequestListFilters(props: {
     involvementActions,
     selectedLabelCount: selectedLabels.length,
     labelActions,
-    author,
+    authorCount,
+    authorLabel:
+      authorCount > 1
+        ? gt("Authors {count}", { count: authorCount })
+        : (teamLabel ??
+          (selectedAuthors[0] === "me" ? gt("By you") : selectedAuthors[0]) ??
+          gt("Authors")),
     authorActions,
   };
 }
@@ -362,7 +412,9 @@ export function PullRequestListFilters(props: {
   readonly sidebar?: boolean;
   readonly filters: ReturnType<typeof usePullRequestListFilters>;
 }) {
-  const { count, more, reset, select, author, selectedLabelCount } = props.filters;
+  const gt = useGT();
+  const { count, more, reset, select, authorCount, authorLabel, selectedLabelCount } =
+    props.filters;
   return (
     <ScrollView
       horizontal
@@ -416,9 +468,9 @@ export function PullRequestListFilters(props: {
         onSelect={select}
       />
       <ListFilterMenu
-        label={author === "me" ? "By you" : (author ?? "Author")}
-        active={Boolean(author)}
-        accessibilityLabel="Filter by author"
+        label={authorLabel}
+        active={authorCount > 0}
+        accessibilityLabel={gt("Filter by author")}
         actions={props.filters.authorActions}
         onSelect={select}
       />

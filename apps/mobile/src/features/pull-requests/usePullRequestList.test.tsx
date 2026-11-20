@@ -71,13 +71,13 @@ vi.mock("../../state/pull-requests", async () => {
 
 import { usePullRequestList } from "./usePullRequestList";
 
-function setup(ids: readonly string[]) {
+function setup(ids: readonly string[], input: PullRequestListInput = { state: "open" }) {
   mocks.failPage = false;
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const registry = AtomRegistry.make();
   const targets = ids.map((id) => ({
     environmentId: EnvironmentId.make(id),
-    input: { state: "open" as const },
+    input,
   }));
   let latest: ReturnType<typeof usePullRequestList>;
   function Probe() {
@@ -105,6 +105,15 @@ function setup(ids: readonly string[]) {
     },
   };
 }
+
+it("does not show or paginate a list whose server ignored the team filter", () => {
+  using probe = setup(["healthy"], {
+    state: "open",
+    filters: { authorTeam: { host: "github.com", organization: "org", slug: "team" } },
+  });
+  expect(probe.latest.authorFilterUnsupported).toBe(true);
+  expect(probe.latest.hasMore).toBe(false);
+});
 
 it("keeps a refresh failure in the source errors and allows healthy pagination", async () => {
   using probe = setup(["healthy", "offline"]);

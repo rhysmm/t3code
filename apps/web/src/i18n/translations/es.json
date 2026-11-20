@@ -78,5 +78,18 @@
   "d109f7bbda29eaab": "Página siguiente",
   "963c1be30e80f725": "Primera página",
   "5c1b45070ec896ee": "Copia de trabajo del hilo",
-  "6f22c0ae3e927a27": "Cambiar copia de trabajo"
+  "6f22c0ae3e927a27": "Cambiar copia de trabajo",
+  "ff6b088c383bf910": "Buscar autores",
+  "d6179a157948c07c": "No se encontraron autores",
+  "353773803bf92ad4": "No se pudieron buscar autores en el host",
+  "e3e2d073449a0289": "Cualquiera",
+  "3b4bcc2b61048204": "Buscar equipos de GitHub",
+  "c5bf72bf43b2efc5": "Borrar selección de autores",
+  "54dfecd33a02d7c8": "Autores",
+  "464180a915c3b0db": "Ningún equipo",
+  "31d5360388cb9a35": "No se pudieron cargar los equipos de GitHub",
+  "cf39601ae8d0246d": "No se encontraron equipos de GitHub",
+  "1de0a9b2badf445d": "Equipo de autores",
+  "f01b2fe280a88f9c": "Actualiza los servidores antiguos de T3 Code para incluir sus pull requests en este filtro de autores.",
+  "2ea146f9a9ace957": "No se pudieron cargar los miembros del equipo de GitHub. Comprueba la conexión del servidor con GitHub."
 }

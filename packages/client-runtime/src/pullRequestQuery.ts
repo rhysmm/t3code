@@ -1,4 +1,4 @@
-import type { PullRequestListFilters } from "@t3tools/contracts";
+import { MAX_PULL_REQUEST_AUTHOR_FILTERS, type PullRequestListFilters } from "@t3tools/contracts";
 
 const REVIEW_VALUES: Record<string, PullRequestListFilters["review"]> = {
   approved: "approved",
@@ -49,8 +49,7 @@ export function parsePullRequestQuery(raw: string): {
   const text: string[] = [];
   const labels: string[][] = [];
   const excludedLabels: string[] = [];
-  // `null` once two different logins are named: GitHub ORs them, the contract carries one.
-  let author: string | null | undefined;
+  const authors = new Map<string, string>();
   let draft: PullRequestListFilters["draft"];
   let review: PullRequestListFilters["review"];
   let checks: PullRequestListFilters["checks"];
@@ -69,8 +68,10 @@ export function parsePullRequestQuery(raw: string): {
       case "author": {
         if (negated) break;
         const login = value.slice(0, MAX_QUALIFIER_LENGTH).trim();
-        if (author === undefined) author = login;
-        else if (author === null || authorKey(author) !== authorKey(login)) author = null;
+        const key = authorKey(login);
+        if (authors.size < MAX_PULL_REQUEST_AUTHOR_FILTERS && !authors.has(key)) {
+          authors.set(key, login);
+        }
         continue;
       }
       case "draft":
@@ -120,6 +121,8 @@ export function parsePullRequestQuery(raw: string): {
     }
     text.push(token);
   }
+  const selectedAuthors = [...authors.values()];
+  const firstAuthor = selectedAuthors[0];
   return {
     text: text.join(" ").slice(0, MAX_TEXT_LENGTH).trim(),
     filters: {
@@ -127,12 +130,22 @@ export function parsePullRequestQuery(raw: string): {
       ...(excludedLabels.length === 0
         ? {}
         : { excludedLabels: excludedLabels.slice(0, MAX_QUALIFIER_VALUES) }),
-      ...(typeof author === "string" ? { author } : {}),
+      ...(selectedAuthors.length === 1 && firstAuthor !== undefined ? { author: firstAuthor } : {}),
+      ...(selectedAuthors.length > 1 ? { authors: selectedAuthors } : {}),
       ...(draft === undefined ? {} : { draft }),
       ...(review === undefined ? {} : { review }),
       ...(checks === undefined ? {} : { checks }),
     },
   };
+}
+
+export function mergePullRequestListFilters(
+  menu: PullRequestListFilters,
+  typed: PullRequestListFilters,
+): PullRequestListFilters {
+  if (typed.author === undefined && typed.authors === undefined) return { ...menu, ...typed };
+  const { author: _author, authors: _authors, authorTeam: _authorTeam, ...remaining } = menu;
+  return { ...remaining, ...typed };
 }
 
 /**

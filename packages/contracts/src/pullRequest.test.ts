@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   PullRequestDetail,
   PullRequestListResult,
+  matchesPullRequestAuthorFilter,
   resolvePullRequestAuthorFilter,
 } from "./pullRequest.ts";
 
@@ -145,5 +146,13 @@ describe("resolvePullRequestAuthorFilter", () => {
   it("passes any other login through trimmed", () => {
     expect(resolvePullRequestAuthorFilter(" ana ", "bilal")).toBe("ana");
     expect(resolvePullRequestAuthorFilter("meredith", "bilal")).toBe("meredith");
+  });
+
+  it("matches any selected login case-insensitively, resolving me per host", () => {
+    const filters = { author: "previous", authors: ["@Me", "alice"] };
+    expect(matchesPullRequestAuthorFilter(filters, "ALICE", "bilal")).toBe(true);
+    expect(matchesPullRequestAuthorFilter(filters, "bilal", "bilal")).toBe(true);
+    expect(matchesPullRequestAuthorFilter(filters, "bilal", "other")).toBe(false);
+    expect(matchesPullRequestAuthorFilter(filters, "previous", "bilal")).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 
-import { resolvePullRequestAuthorFilter } from "@t3tools/contracts";
+import { matchesPullRequestAuthorFilter, pullRequestAuthorFilterKey } from "@t3tools/contracts";
 import type {
   EnvironmentId,
   PullRequestListEntry,
@@ -268,9 +268,8 @@ export function matchesPullRequestFilters(
         : entry.reviewDecision === filters.review)) &&
     (filters.labels === undefined || filters.labels.every((group) => group.some(holds))) &&
     (filters.excludedLabels === undefined || !filters.excludedLabels.some(holds)) &&
-    (filters.author === undefined ||
-      entry.author?.login.toLowerCase() ===
-        resolvePullRequestAuthorFilter(filters.author, viewer).toLowerCase())
+    (filters.authorTeam !== undefined ||
+      matchesPullRequestAuthorFilter(filters, entry.author?.login, viewer))
   );
 }
 
@@ -529,10 +528,24 @@ export interface MergedPullRequestList {
   readonly truncated: boolean;
   readonly nextCursors: Readonly<Record<string, PullRequestListCursors>>;
   readonly truncatedEnvironments: ReadonlyArray<string>;
+  readonly authorFilterUnsupported?: boolean;
+  readonly authorTeamUnavailable?: boolean;
+  readonly authorFilterKeys?: Readonly<Record<string, string>>;
+}
+
+export function pullRequestAuthorFilterChanged(
+  previous: MergedPullRequestList,
+  next: MergedPullRequestList,
+): boolean {
+  return Object.entries(next.authorFilterKeys ?? {}).some(([environmentId, key]) => {
+    const prior = previous.authorFilterKeys?.[environmentId];
+    return prior !== undefined && prior !== key;
+  });
 }
 
 export function mergePullRequestLists(
   answers: ReadonlyArray<readonly [EnvironmentId, PullRequestListResult]>,
+  requireAuthorFilterStatus = false,
 ): MergedPullRequestList | null {
   if (answers.length === 0) return null;
   const viewers: Record<string, string> = {};
@@ -542,6 +555,9 @@ export function mergePullRequestLists(
   const errors: EnvironmentPullRequestError[] = [];
   const nextCursors: Record<string, PullRequestListCursors> = {};
   let truncated = false;
+  let authorFilterUnsupported = false;
+  let authorTeamUnavailable = false;
+  const authorFilterKeys: Record<string, string> = {};
   for (const [environmentId, answer] of answers) {
     for (const [host, login] of Object.entries(answer.viewers)) {
       viewers[`${environmentId} ${host}`] = login;
@@ -560,6 +576,15 @@ export function mergePullRequestLists(
             },
       );
     }
+    errors.push(...answer.errors.map((error) => ({ ...error, environmentId })));
+    if (requireAuthorFilterStatus) {
+      authorFilterKeys[environmentId] = pullRequestAuthorFilterKey(answer) ?? "unsupported";
+      if (answer.authorFilterStatus === undefined) {
+        authorFilterUnsupported = true;
+        continue;
+      }
+    }
+    authorTeamUnavailable ||= answer.authorFilterStatus === "team-unavailable";
     for (const entry of answer.entries) {
       const held = entries.get(entry.url);
       // The first environment to answer keeps a pull request that several of them read.
@@ -570,7 +595,6 @@ export function mergePullRequestLists(
         entries.set(entry.url, { ...entry, environmentId });
       }
     }
-    errors.push(...answer.errors.map((error) => ({ ...error, environmentId })));
     truncated ||= answer.truncated;
     if (answer.truncated) truncatedEnvironments.add(environmentId);
     if (Object.keys(answer.nextCursors).length > 0) {
@@ -585,6 +609,9 @@ export function mergePullRequestLists(
     truncated,
     nextCursors,
     truncatedEnvironments: [...truncatedEnvironments],
+    ...(authorFilterUnsupported ? { authorFilterUnsupported } : {}),
+    ...(authorTeamUnavailable ? { authorTeamUnavailable } : {}),
+    ...(requireAuthorFilterStatus ? { authorFilterKeys } : {}),
   };
 }
 

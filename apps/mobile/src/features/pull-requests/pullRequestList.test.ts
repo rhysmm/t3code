@@ -23,6 +23,7 @@ import {
   scopedPullRequestListKey,
   shownPullRequestListPages,
   pullRequestListRowsAreEqual,
+  togglePullRequestAuthor,
   withAnsweredPullRequestStats,
   withListedPullRequests,
   withShownPullRequestStats,
@@ -132,19 +133,30 @@ describe("mobile PR list pagination", () => {
     ]);
   });
   it("refreshes the head without dropping older loaded pages or rewinding their cursor", () => {
-    const first = pullRequestListHead(null, page([entry(3)], { repo: "first" }));
+    const roster = { authorFilterStatus: "applied", authorTeamRevision: "original" } as const;
+    const first = pullRequestListHead(null, {
+      ...page([entry(3)], { repo: "first" }),
+      ...roster,
+    });
     const continued = appendPullRequestListPage(first, page([entry(2)], { repo: "second" }), {
       state: "open",
       cursors: first.nextCursors,
     });
-    const updated = pullRequestListHead(
-      continued,
-      page([entry(4), entry(3, { title: "New title", observedAt: 2 })], { repo: "first-new" }),
-    );
+    const updated = pullRequestListHead(continued, {
+      ...page([entry(4), entry(3, { title: "New title", observedAt: 2 })], { repo: "first-new" }),
+      ...roster,
+    });
     expect(updated.entries.map((row) => row.number)).toEqual([4, 3, 2]);
     expect(updated.entries[1]?.title).toBe("New title");
     expect(updated.nextCursors).toEqual({ repo: "second" });
     expect(pullRequestListHead(updated, updated.head)).toBe(updated);
+    const changedRoster = pullRequestListHead(updated, {
+      ...page([entry(4)], { repo: "new-roster-first" }),
+      ...roster,
+      authorTeamRevision: "new",
+    });
+    expect(changedRoster.entries.map((row) => row.number)).toEqual([4]);
+    expect(changedRoster.nextCursors).toEqual({ repo: "new-roster-first" });
   });
   it("can grow legacy listings that provide no cursor, without exceeding the wire limit", () => {
     const first = pullRequestListHead(null, { ...page([entry(1)]), truncated: true });
@@ -293,6 +305,20 @@ describe("mobile PR scan and filters", () => {
         new Set(["github.com"]),
       ).map((row) => row.number),
     ).toEqual([1]);
+  });
+  it("adds to a saved single author and clears the filter after the last removal", () => {
+    const both = togglePullRequestAuthor({ author: "octocat" }, "hubot");
+    expect(
+      pullRequestListInput({ ...DEFAULT_PR_LIST_CONTROLS, filters: both }, "").filters,
+    ).toEqual({ authors: ["octocat", "hubot"] });
+    const one = togglePullRequestAuthor(both, "OCTOCAT");
+    expect(pullRequestListInput({ ...DEFAULT_PR_LIST_CONTROLS, filters: one }, "").filters).toEqual(
+      { author: "hubot" },
+    );
+    const none = togglePullRequestAuthor(one, "hubot");
+    expect(
+      pullRequestListInput({ ...DEFAULT_PR_LIST_CONTROLS, filters: none }, "").filters,
+    ).toEqual({});
   });
   it("does not label unsupported review summaries as reviewed or match text locally on host-search results", () => {
     expect(

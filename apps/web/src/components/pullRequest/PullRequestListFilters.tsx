@@ -1,13 +1,16 @@
 import { Spinner } from "~/components/ui/spinner";
-import type {
-  EnvironmentId,
-  ProjectId,
-  PullRequestFilterOptionsInput,
-  PullRequestInvolvement,
-  PullRequestListFilters,
-  PullRequestListState,
-  SourceControlProviderKind,
+import {
+  MAX_PULL_REQUEST_AUTHOR_FILTERS,
+  type EnvironmentId,
+  type ProjectId,
+  type PullRequestAuthorTeam,
+  type PullRequestFilterOptionsInput,
+  type PullRequestInvolvement,
+  type PullRequestListFilters,
+  type PullRequestListState,
+  type SourceControlProviderKind,
 } from "@t3tools/contracts";
+import { T, useGT } from "gt-react";
 import {
   CircleCheckIcon,
   CircleDashedIcon,
@@ -20,6 +23,7 @@ import {
   SearchIcon,
   TagIcon,
   UserRoundIcon,
+  UsersRoundIcon,
 } from "lucide-react";
 import { type ElementType, useState } from "react";
 
@@ -266,7 +270,9 @@ function useHostedFilterOptions(
     })),
   );
   // Until the search catches up with the typing, the host's answers are for older text.
-  return sent === typed ? hosted : { labels: [], authors: [], error: null, isPending: true };
+  return sent === typed
+    ? hosted
+    : { labels: [], authors: [], teams: [], error: null, isPending: true };
 }
 
 function PullRequestAuthorChoices({
@@ -275,22 +281,21 @@ function PullRequestAuthorChoices({
   scope,
   onChange,
 }: {
-  value: string | undefined;
+  value: ReadonlyArray<string>;
   options: ReadonlyArray<PullRequestAuthorFacet>;
   scope: ReadonlyArray<PullRequestFilterOptionScope>;
-  onChange: (author: string | undefined) => void;
+  onChange: (authors: ReadonlyArray<string>) => void;
 }) {
+  const gt = useGT();
   const [query, setQuery] = useState("");
   const hosted = useHostedFilterOptions(scope, "authors", query);
-  const login = value?.toLowerCase() ?? "";
-  const selected = selectedPullRequestAuthor(options, hosted.authors, value);
+  const selected = new Set(value.map((login) => login.toLowerCase()));
   const visible = [
-    ...(selected ? [selected] : []),
-    ...pullRequestAuthorChoices(options, hosted.authors, query).filter(
-      (option) => option.actor.login.toLowerCase() !== login,
-    ),
-  ].slice(0, 30);
-  const select = (next: string) => next.toLowerCase() !== login && onChange(next || undefined);
+    ...value.flatMap((login) => selectedPullRequestAuthor(options, hosted.authors, login) ?? []),
+    ...pullRequestAuthorChoices(options, hosted.authors, query)
+      .filter(({ actor }) => !selected.has(actor.login.toLowerCase()))
+      .slice(0, 30),
+  ];
   return (
     <>
       <MenuSearchInput
@@ -298,18 +303,30 @@ function PullRequestAuthorChoices({
         busy={hosted.isPending}
         value={query}
         onChange={(event) => setQuery(event.currentTarget.value)}
-        placeholder="Search authors"
-        aria-label="Search authors"
+        placeholder={gt("Search authors")}
+        aria-label={gt("Search authors")}
       />
-      <MenuRadioGroup value={selected?.actor.login ?? value ?? ""} onValueChange={select}>
-        <MenuRadioItem value="">
-          <span className="flex min-w-0 items-center gap-2">
-            <LayersIcon aria-hidden className="size-3.5" />
-            Anyone
-          </span>
-        </MenuRadioItem>
-        {visible.map((option) => (
-          <MenuRadioItem key={option.actor.login.toLowerCase()} value={option.actor.login}>
+      {value.length > 0 ? (
+        <MenuItem closeOnClick={false} onClick={() => onChange([])}>
+          <T>Clear authors</T>
+        </MenuItem>
+      ) : null}
+      {visible.map((option) => {
+        const login = option.actor.login.toLowerCase();
+        const checked = selected.has(login);
+        return (
+          <MenuCheckboxItem
+            key={login}
+            checked={checked}
+            disabled={!checked && value.length >= MAX_PULL_REQUEST_AUTHOR_FILTERS}
+            onCheckedChange={(next) =>
+              onChange(
+                next
+                  ? [...value, option.actor.login]
+                  : value.filter((held) => held.toLowerCase() !== login),
+              )
+            }
+          >
             <span className="flex min-w-0 items-center gap-2">
               <PullRequestActorAvatar actor={option.actor} />
               <span className="min-w-0 flex-1 truncate">{option.actor.login}</span>
@@ -319,36 +336,43 @@ function PullRequestAuthorChoices({
                 </span>
               ) : null}
             </span>
-          </MenuRadioItem>
-        ))}
-        {visible.length === 0 && !hosted.isPending ? (
-          <MenuItem disabled>
-            {hosted.error === null ? "No authors found" : "Couldn't search authors on the host"}
-          </MenuItem>
-        ) : null}
-      </MenuRadioGroup>
+          </MenuCheckboxItem>
+        );
+      })}
+      {visible.length === 0 && !hosted.isPending ? (
+        <MenuItem disabled>
+          {hosted.error === null
+            ? gt("No authors found")
+            : gt("Couldn't search authors on the host")}
+        </MenuItem>
+      ) : null}
     </>
   );
 }
 
 function PullRequestAuthorFilter({
   value,
+  hasTeam,
   options,
   scope,
   onChange,
 }: {
-  value: string | undefined;
+  value: ReadonlyArray<string>;
+  hasTeam: boolean;
   options: ReadonlyArray<PullRequestAuthorFacet>;
   scope: ReadonlyArray<PullRequestFilterOptionScope>;
-  onChange: (author: string | undefined) => void;
+  onChange: (authors: ReadonlyArray<string>) => void;
 }) {
+  const gt = useGT();
   return (
     <MenuSub>
       <MenuSubTrigger>
         <UserRoundIcon aria-hidden className="size-3.5" />
-        <span className="flex-1">Author</span>
+        <span className="flex-1">
+          <T>Authors</T>
+        </span>
         <span className="min-w-0 max-w-32 truncate text-xs text-muted-foreground">
-          {value ?? "Anyone"}
+          {value.length === 0 && !hasTeam ? gt("Anyone") : value.join(", ")}
         </span>
       </MenuSubTrigger>
       <MenuSubPopup>
@@ -358,6 +382,84 @@ function PullRequestAuthorFilter({
           scope={scope}
           onChange={onChange}
         />
+      </MenuSubPopup>
+    </MenuSub>
+  );
+}
+
+const authorTeamKey = ({ host, organization, slug }: PullRequestAuthorTeam) =>
+  `${host}/${organization}/${slug}`.toLowerCase();
+
+function authorTeamLabel({ host, organization, slug }: PullRequestAuthorTeam) {
+  return host === "github.com" ? `${organization}/${slug}` : `${host}/${organization}/${slug}`;
+}
+
+function PullRequestAuthorTeamChoices({
+  value,
+  scope,
+  onChange,
+}: {
+  value: PullRequestAuthorTeam | undefined;
+  scope: ReadonlyArray<PullRequestFilterOptionScope>;
+  onChange: (team: PullRequestAuthorTeam | undefined) => void;
+}) {
+  const gt = useGT();
+  const [query, setQuery] = useState("");
+  const hosted = useHostedFilterOptions(scope, "teams", query);
+  const selected = value ? authorTeamKey(value) : "";
+  const teams = new Map(hosted.teams.map((team) => [authorTeamKey(team), team]));
+  if (value) teams.set(selected, value);
+  return (
+    <>
+      <MenuSearchInput
+        autoFocus
+        busy={hosted.isPending}
+        value={query}
+        onChange={(event) => setQuery(event.currentTarget.value)}
+        placeholder={gt("Search GitHub teams")}
+        aria-label={gt("Search GitHub teams")}
+      />
+      <MenuRadioGroup value={selected} onValueChange={(key) => onChange(teams.get(key))}>
+        <MenuRadioItem value="">
+          <T>No team</T>
+        </MenuRadioItem>
+        {[...teams].map(([key, team]) => (
+          <MenuRadioItem key={key} value={key}>
+            {authorTeamLabel(team)}
+          </MenuRadioItem>
+        ))}
+      </MenuRadioGroup>
+      {hosted.error !== null ? (
+        <MenuItem disabled>
+          <T>Couldn't load GitHub teams</T>
+        </MenuItem>
+      ) : !hosted.isPending && teams.size === 0 ? (
+        <MenuItem disabled>
+          <T>No GitHub teams found</T>
+        </MenuItem>
+      ) : null}
+    </>
+  );
+}
+
+function PullRequestAuthorTeamFilter({
+  value,
+  scope,
+  onChange,
+}: Parameters<typeof PullRequestAuthorTeamChoices>[0]) {
+  return (
+    <MenuSub>
+      <MenuSubTrigger>
+        <UsersRoundIcon aria-hidden className="size-3.5" />
+        <span className="flex-1">
+          <T>Author team</T>
+        </span>
+        <span className="min-w-0 max-w-32 truncate text-xs text-muted-foreground">
+          {value ? authorTeamLabel(value) : <T>No team</T>}
+        </span>
+      </MenuSubTrigger>
+      <MenuSubPopup>
+        <PullRequestAuthorTeamChoices value={value} scope={scope} onChange={onChange} />
       </MenuSubPopup>
     </MenuSub>
   );
@@ -479,6 +581,7 @@ export function PullRequestFiltersMenu({
   authorOptions = [],
   labelOptions = [],
   optionScope,
+  canFilterByAuthorTeam,
   host,
   hostOptions,
   onHost,
@@ -503,6 +606,7 @@ export function PullRequestFiltersMenu({
   authorOptions?: ReadonlyArray<PullRequestAuthorFacet>;
   labelOptions?: ReadonlyArray<PullRequestLabelFacet>;
   optionScope: ReadonlyArray<PullRequestFilterOptionScope>;
+  canFilterByAuthorTeam: boolean;
   host: string | undefined;
   hostOptions: ReadonlyArray<PullRequestFilterOption<string>>;
   onHost: (host: string | undefined) => void;
@@ -516,6 +620,7 @@ export function PullRequestFiltersMenu({
   onProject: (projectId: ProjectId | undefined, environmentId: EnvironmentId | undefined) => void;
 }) {
   const selectedLabels = (filters.labels ?? []).flatMap((group) => group);
+  const selectedAuthors = filters.authors ?? (filters.author ? [filters.author] : []);
   const filterCount = [
     state !== "open",
     involvement !== "all",
@@ -525,7 +630,8 @@ export function PullRequestFiltersMenu({
     filters.draft,
     filters.review,
     filters.checks,
-    filters.author,
+    filters.authorTeam,
+    ...selectedAuthors,
     ...selectedLabels,
   ].filter(Boolean).length;
   const updateFilters = (next: Partial<PullRequestListFilters>) =>
@@ -586,11 +692,21 @@ export function PullRequestFiltersMenu({
         />
         <MenuSeparator />
         <PullRequestAuthorFilter
-          value={filters.author}
+          value={selectedAuthors}
+          hasTeam={filters.authorTeam !== undefined}
           options={authorOptions}
           scope={optionScope}
-          onChange={(author) => updateFilters({ author })}
+          onChange={(authors) =>
+            updateFilters({ author: undefined, authors: authors.length ? authors : undefined })
+          }
         />
+        {canFilterByAuthorTeam || filters.authorTeam !== undefined ? (
+          <PullRequestAuthorTeamFilter
+            value={filters.authorTeam}
+            scope={optionScope}
+            onChange={(authorTeam) => updateFilters({ authorTeam })}
+          />
+        ) : null}
         <PullRequestLabelFilter
           value={selectedLabels}
           options={labelOptions}

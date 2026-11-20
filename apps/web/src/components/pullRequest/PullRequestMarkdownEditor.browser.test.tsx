@@ -37,6 +37,7 @@ vi.mock(import("~/state/pullRequests"), async (original) => ({
             { login: "julius", name: "Julius", avatarUrl: null },
             { login: "theo", name: "Theo", avatarUrl: null },
           ],
+    teams: [],
     references:
       targets.length === 0
         ? []

@@ -1901,6 +1901,81 @@ layer("GitHubPullRequestApi.layer", (it) => {
     }),
   );
 
+  it.effect("uses repeated author qualifiers while authored scope only asks for the viewer", () =>
+    Effect.gen(function* () {
+      mockedExecute.mockReturnValue(Effect.succeed(emptySearch()));
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      const input = {
+        cwd: "/w",
+        host: "github.com",
+        repositories: ["acme/web"],
+        state: "open" as const,
+        viewer: "bilal",
+        limit: 10,
+        filters: { authors: ["octocat", "@me"] },
+      };
+
+      yield* cli.searchPullRequests({ ...input, involvement: "all" });
+      yield* cli.searchPullRequests({ ...input, involvement: "authored" });
+
+      expect(searchOfCall(0)).toBe(
+        'is:pr is:open author:"octocat" author:"bilal" sort:updated-desc repo:acme/web',
+      );
+      expect(searchOfCall(1)).toBe("is:pr is:open author:bilal sort:updated-desc repo:acme/web");
+    }),
+  );
+
+  it.effect("reuses the team directory for repeated searches", () =>
+    Effect.gen(function* () {
+      mockedExecute.mockReturnValue(
+        Effect.succeed(output(encodeJson([{ slug: "infra" }]), false, false)),
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      const organization = { cwd: "/w", host: "github.com", organization: "acme" };
+      const teams = yield* cli.listAuthorTeams(organization);
+      expect(teams.items.map(({ slug }) => slug)).toEqual(["infra"]);
+      expect(yield* cli.listAuthorTeams(organization)).toEqual(teams);
+      expect(restCallsTo("orgs/acme/teams")).toHaveLength(1);
+    }),
+  );
+
+  it.effect("reads a whole team roster and revalidates each page", () =>
+    Effect.gen(function* () {
+      const firstPage = Array.from({ length: 100 }, (_, index) => ({ login: `member-${index}` }));
+      mockedExecute.mockImplementation((call) => {
+        if (call.kind !== "rest") return Effect.die("Expected team roster request");
+        const page = call.path.endsWith("page=1") ? 1 : 2;
+        return Effect.succeed(
+          call.ifNoneMatch
+            ? output("", false, false, {}, 304)
+            : output(
+                encodeJson(page === 1 ? firstPage : [{ login: "last-member" }]),
+                false,
+                false,
+                { etag: `team-page-${page}` },
+              ),
+        );
+      });
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      const team = { cwd: "/w", host: "github.com", organization: "acme", slug: "infra" };
+
+      const members = yield* cli.listAuthorTeamMembers(team);
+      expect(members).toEqual([...firstPage.map(({ login }) => login), "last-member"]);
+      expect(yield* cli.listAuthorTeamMembers(team)).toEqual(members);
+      expect(
+        restCallsTo("orgs/acme/teams/infra/members").map(({ path, ifNoneMatch }) => [
+          path,
+          ifNoneMatch,
+        ]),
+      ).toEqual([
+        ["orgs/acme/teams/infra/members?per_page=100&page=1", undefined],
+        ["orgs/acme/teams/infra/members?per_page=100&page=2", undefined],
+        ["orgs/acme/teams/infra/members?per_page=100&page=1", "team-page-1"],
+        ["orgs/acme/teams/infra/members?per_page=100&page=2", "team-page-2"],
+      ]);
+    }),
+  );
+
   it.effect("sends one label qualifier per group, its names joined the way GitHub ors them", () =>
     Effect.gen(function* () {
       mockedExecute.mockImplementation((call) =>

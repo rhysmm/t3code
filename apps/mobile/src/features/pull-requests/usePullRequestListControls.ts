@@ -22,26 +22,27 @@ export function usePullRequestListControls() {
         },
       }),
     });
-  const setControls = (environment: string | null, controls: PullRequestListControls) =>
+  const setControls = (
+    environment: string | null,
+    controls:
+      | PullRequestListControls
+      | ((current: PullRequestListControls) => PullRequestListControls),
+  ) =>
     savePreferences({
-      transform: (current) => ({
-        pullRequestListFilters: {
-          environmentId: current.pullRequestListFilters?.environmentId ?? null,
-          controls: withEnvironmentControls(
-            current.pullRequestListFilters?.controls,
-            environment ?? "",
-            controls,
-          ),
-        },
-      }),
+      transform: (current) => {
+        const savedFilters = current.pullRequestListFilters;
+        const key = environment ?? "";
+        const previous = savedFilters?.controls[key] ?? DEFAULT_PR_LIST_CONTROLS;
+        return {
+          pullRequestListFilters: {
+            environmentId: savedFilters?.environmentId ?? null,
+            controls: {
+              ...savedFilters?.controls,
+              [key]: typeof controls === "function" ? controls(previous) : controls,
+            },
+          },
+        };
+      },
     });
   return { environmentId, controlsFor, setEnvironmentId, setControls } as const;
-}
-
-function withEnvironmentControls(
-  saved: Readonly<Record<string, PullRequestListControls>> | undefined,
-  environment: string,
-  controls: PullRequestListControls,
-): Record<string, PullRequestListControls> {
-  return { ...saved, [environment]: controls };
 }

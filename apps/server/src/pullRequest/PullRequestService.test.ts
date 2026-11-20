@@ -3888,6 +3888,98 @@ it.effect("keeps a row of a host that ignored the filters if any name of a label
   }),
 );
 
+it.effect("filters by individuals and a current team confined to its GitHub host", () =>
+  Effect.gen(function* () {
+    const team = { host: "github.com", organization: "Acme", slug: "infra" };
+    const membershipReads: string[] = [];
+    let teamAvailable = true;
+    let roster = ["MEMBER"];
+    const service = yield* makeService({
+      projects: [
+        project({ id: "p1", title: "team repo", workspaceRoot: "/a", repository: "acme/team" }),
+        project({ id: "p2", title: "another org", workspaceRoot: "/b", repository: "other/util" }),
+        project({
+          id: "p3",
+          title: "another host",
+          workspaceRoot: "/c",
+          host: "ghe.example.com",
+          repository: "acme/team",
+        }),
+      ],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          listAuthorTeamMembers: ({ cwd }) => {
+            membershipReads.push(cwd);
+            return teamAvailable
+              ? Effect.succeed(roster)
+              : Effect.fail(
+                  new PullRequestProviderError({
+                    provider: SourceControlProviderKind.make("github"),
+                    operation: "listAuthorTeamMembers",
+                    reason: "forbidden",
+                    detail: "The credential cannot read the team.",
+                  }),
+                );
+          },
+          listChangeRequests: () =>
+            Effect.succeed({
+              items: ["member", "individual", "someone-else"].map((login, index) => ({
+                ...changeRequest(index + 1, `2026-07-0${index + 1}T00:00:00Z`),
+                author: { login, name: null, avatarUrl: null },
+              })),
+              truncated: false,
+              continues: false,
+            }),
+        }),
+      ],
+    });
+    const input = {
+      state: "open" as const,
+      filters: { authors: ["INDIVIDUAL"], authorTeam: team },
+    };
+    const first = yield* service.list(input);
+    expect(first.authorFilterStatus).toBe("applied");
+    expect(first.entries.map(({ projectId, number }) => [projectId, number]).toSorted()).toEqual([
+      ["p1", 1],
+      ["p1", 2],
+      ["p2", 1],
+      ["p2", 2],
+      ["p3", 2],
+    ]);
+    const scoped = yield* service.list({ ...input, projectId: "p2" as ProjectId });
+    expect(scoped.entries.map(({ number }) => number)).toEqual([2, 1]);
+    expect(membershipReads).toEqual(["/a", "/a"]);
+
+    const arbitraryTeam = yield* service.list({
+      ...input,
+      filters: { authors: ["INDIVIDUAL"], authorTeam: { ...team, organization: "untracked" } },
+    });
+    expect(arbitraryTeam.authorFilterStatus).toBe("team-unavailable");
+    expect(membershipReads).toEqual(["/a", "/a"]);
+
+    roster = ["someone-else"];
+    yield* TestClock.adjust("31 seconds");
+    const refreshed = yield* service.list(input);
+    expect(
+      refreshed.entries.map(({ projectId, number }) => [projectId, number]).toSorted(),
+    ).toEqual([
+      ["p1", 2],
+      ["p1", 3],
+      ["p2", 2],
+      ["p2", 3],
+      ["p3", 2],
+    ]);
+
+    teamAvailable = false;
+    yield* TestClock.adjust("31 seconds");
+    const withoutTeamAccess = yield* service.list(input);
+    expect(withoutTeamAccess.authorFilterStatus).toBe("team-unavailable");
+    expect(withoutTeamAccess.entries.map(({ number }) => number)).toEqual([2, 2, 2]);
+    const onlyTeam = yield* service.list({ ...input, filters: { authorTeam: team } });
+    expect(onlyTeam.entries).toEqual([]);
+  }),
+);
+
 it.effect.each([false, true])(
   "authorizes stack rebases and refreshes sibling layers (cross-host: %s)",
   (crossHost) =>

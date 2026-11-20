@@ -78,5 +78,18 @@
   "d109f7bbda29eaab": "Nächste Seite",
   "963c1be30e80f725": "Erste Seite",
   "5c1b45070ec896ee": "Checkout des Threads",
-  "6f22c0ae3e927a27": "Checkout wechseln"
+  "6f22c0ae3e927a27": "Checkout wechseln",
+  "ff6b088c383bf910": "Autoren suchen",
+  "d6179a157948c07c": "Keine Autoren gefunden",
+  "353773803bf92ad4": "Auf dem Host konnte nicht nach Autoren gesucht werden",
+  "e3e2d073449a0289": "Alle",
+  "3b4bcc2b61048204": "GitHub-Teams suchen",
+  "c5bf72bf43b2efc5": "Autorenauswahl löschen",
+  "54dfecd33a02d7c8": "Autoren",
+  "464180a915c3b0db": "Kein Team",
+  "31d5360388cb9a35": "GitHub-Teams konnten nicht geladen werden",
+  "cf39601ae8d0246d": "Keine GitHub-Teams gefunden",
+  "1de0a9b2badf445d": "Autorenteam",
+  "f01b2fe280a88f9c": "Aktualisiere ältere T3 Code-Server, damit dieser Autorenfilter auch deren Pull Requests berücksichtigt.",
+  "2ea146f9a9ace957": "Die Mitglieder des GitHub-Teams konnten nicht geladen werden. Prüfe die GitHub-Verbindung des Servers."
 }

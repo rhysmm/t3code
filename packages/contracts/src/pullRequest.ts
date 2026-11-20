@@ -35,6 +35,21 @@ const PullRequestQualifierValues = Schema.Array(PullRequestQualifierValue).check
   Schema.isMaxLength(10),
 );
 
+export const MAX_PULL_REQUEST_AUTHOR_FILTERS = 25;
+const PullRequestAuthorTeamPart = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(100),
+  Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9-]*$/),
+);
+export const PullRequestAuthorTeam = Schema.Struct({
+  host: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(253),
+    Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/),
+  ),
+  organization: PullRequestAuthorTeamPart,
+  slug: PullRequestAuthorTeamPart,
+});
+export type PullRequestAuthorTeam = typeof PullRequestAuthorTeam.Type;
+
 export const PullRequestListFilters = Schema.Struct({
   draft: Schema.optional(Schema.Literals(["only", "hide"])),
   review: Schema.optional(
@@ -45,6 +60,12 @@ export const PullRequestListFilters = Schema.Struct({
   labels: Schema.optional(Schema.Array(PullRequestQualifierValues).check(Schema.isMaxLength(10))),
   excludedLabels: Schema.optional(PullRequestQualifierValues),
   author: Schema.optional(PullRequestQualifierValue),
+  authors: Schema.optional(
+    Schema.Array(PullRequestQualifierValue).check(
+      Schema.isMaxLength(MAX_PULL_REQUEST_AUTHOR_FILTERS),
+    ),
+  ),
+  authorTeam: Schema.optional(PullRequestAuthorTeam),
 });
 export type PullRequestListFilters = typeof PullRequestListFilters.Type;
 
@@ -438,8 +459,17 @@ export const PullRequestListResult = Schema.Struct({
   errors: Schema.Array(PullRequestListProjectError),
   truncated: Schema.Boolean,
   nextCursors: PullRequestListCursors,
+  authorFilterStatus: Schema.optional(Schema.Literals(["applied", "team-unavailable"])),
+  authorTeamRevision: Schema.optional(TrimmedNonEmptyString),
 });
 export type PullRequestListResult = typeof PullRequestListResult.Type;
+
+export function pullRequestAuthorFilterKey(result: PullRequestListResult): string | undefined {
+  const { authorFilterStatus, authorTeamRevision } = result;
+  return authorTeamRevision === undefined
+    ? authorFilterStatus
+    : `${authorFilterStatus}:${authorTeamRevision}`;
+}
 
 export const PullRequestRef = Schema.Struct({
   projectId: ProjectId,
@@ -578,7 +608,12 @@ export const PullRequestListStatsResult = Schema.Struct({
 });
 export type PullRequestListStatsResult = typeof PullRequestListStatsResult.Type;
 
-export const PullRequestFilterOptionKind = Schema.Literals(["labels", "authors", "references"]);
+export const PullRequestFilterOptionKind = Schema.Literals([
+  "labels",
+  "authors",
+  "teams",
+  "references",
+]);
 export type PullRequestFilterOptionKind = typeof PullRequestFilterOptionKind.Type;
 
 /** Scoped like `PullRequestListInput`, so the options come from the repositories it lists. */
@@ -606,6 +641,7 @@ export type PullRequestReferenceCandidate = typeof PullRequestReferenceCandidate
 export const PullRequestFilterOptions = Schema.Struct({
   labels: Schema.Array(PullRequestLabel),
   authors: Schema.Array(PullRequestActor),
+  teams: Schema.optional(Schema.Array(PullRequestAuthorTeam)),
   // Servers from before reference completion send no key.
   references: Schema.Array(PullRequestReferenceCandidate).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -993,6 +1029,33 @@ export function resolvePullRequestAuthorFilter(
   const trimmed = author.trim();
   if (!/^@?me$/i.test(trimmed)) return trimmed;
   return viewer === null || viewer === undefined || viewer.trim().length === 0 ? trimmed : viewer;
+}
+
+export function resolvePullRequestAuthorLogins(
+  filters: Pick<PullRequestListFilters, "author" | "authors"> | undefined,
+  viewer: string | null | undefined,
+): ReadonlyArray<string> {
+  const authors = filters?.authors?.length
+    ? filters.authors
+    : filters?.author === undefined
+      ? []
+      : [filters.author];
+  return [
+    ...new Set(
+      authors.map((author) => resolvePullRequestAuthorFilter(author, viewer).toLowerCase()),
+    ),
+  ];
+}
+
+export function matchesPullRequestAuthorFilter(
+  filters: Pick<PullRequestListFilters, "author" | "authors"> | undefined,
+  login: string | null | undefined,
+  viewer: string | null | undefined,
+): boolean {
+  if (!filters?.authors?.length && filters?.author === undefined) return true;
+  return (
+    login != null && resolvePullRequestAuthorLogins(filters, viewer).includes(login.toLowerCase())
+  );
 }
 
 export class PullRequestUnavailableError extends Schema.TaggedError<PullRequestUnavailableError>()(

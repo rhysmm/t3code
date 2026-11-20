@@ -8,6 +8,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Hash from "effect/Hash";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Option from "effect/Option";
@@ -18,7 +19,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import {
   PullRequestOperationError,
   PullRequestUnavailableError,
-  resolvePullRequestAuthorFilter,
+  resolvePullRequestAuthorLogins,
   type OrchestrationProjectShell,
   type ProjectId,
   type PullRequestAction,
@@ -47,6 +48,7 @@ import {
   type PullRequestFilterOptions,
   type PullRequestFilterOptionsInput,
   type PullRequestActor,
+  type PullRequestAuthorTeam,
   type PullRequestReferenceCandidate,
   type PullRequestLabel,
   type PullRequestListStatsResult,
@@ -649,6 +651,12 @@ function withRateLimitBackoff(
             api.searchRepositoryAuthors,
           ),
         }),
+    ...(api.listAuthorTeams === undefined
+      ? {}
+      : { listAuthorTeams: interactive("listAuthorTeams", api.listAuthorTeams) }),
+    ...(api.listAuthorTeamMembers === undefined
+      ? {}
+      : { listAuthorTeamMembers: wrap("listAuthorTeamMembers", api.listAuthorTeamMembers) }),
     ...(api.searchRepositoryReferences === undefined
       ? {}
       : {
@@ -1278,7 +1286,7 @@ export const make = Effect.gen(function* () {
   const matchesRowFilters = (
     item: ProviderChangeRequest,
     filters: PullRequestListFilters | undefined,
-    viewer: string,
+    authors: ReadonlySet<string>,
   ): boolean => {
     if (filters === undefined) return true;
     const labels = new Set(item.labels.map((label) => label.name.trim().toLowerCase()));
@@ -1295,9 +1303,7 @@ export const make = Effect.gen(function* () {
         item.checksState === filters.checks) &&
       (filters.labels === undefined || filters.labels.every((group) => group.some(holds))) &&
       (filters.excludedLabels === undefined || !filters.excludedLabels.some(holds)) &&
-      (filters.author === undefined ||
-        item.author?.login.toLowerCase() ===
-          resolvePullRequestAuthorFilter(filters.author, viewer).toLowerCase())
+      (authors.size === 0 || (item.author !== null && authors.has(item.author.login.toLowerCase())))
     );
   };
 
@@ -1344,6 +1350,31 @@ export const make = Effect.gen(function* () {
         : { reviewDecision: input.item.reviewDecision }),
     };
   };
+
+  const resolveAuthorTeam = Effect.fn("PullRequestService.resolveAuthorTeam")(function* (
+    team: PullRequestAuthorTeam | undefined,
+    projects: ReadonlyArray<SupportedProject>,
+  ) {
+    if (team === undefined) return [];
+    const host = team.host.toLowerCase();
+    if (!projects.some((project) => project.host === host && project.api.kind === "github")) {
+      return [];
+    }
+    const owner = team.organization.toLowerCase();
+    const inOrganization = (project: SupportedProject) =>
+      project.host === host &&
+      project.api.kind === "github" &&
+      project.repository.toLowerCase().startsWith(`${owner}/`);
+    // The current project filter can hide the checkout that authorizes this team lookup.
+    const project =
+      projects.find(inOrganization) ??
+      (yield* listWorkspaceProjects({ host })).supported.find(inOrganization);
+    const read = project?.api.listAuthorTeamMembers;
+    if (project === undefined || read === undefined) return null;
+    return yield* read({ ...team, host, cwd: project.project.workspaceRoot }).pipe(
+      Effect.orElseSucceed(() => null),
+    );
+  });
 
   const listUncached: PullRequestService["Service"]["list"] = Effect.fn(
     "PullRequestService.listUncached",
@@ -1395,11 +1426,68 @@ export const make = Effect.gen(function* () {
       })),
     ];
 
+    const {
+      authorTeam,
+      author: _author,
+      authors: selectedAuthors,
+      ...otherFilters
+    } = input.filters ?? {};
+    const usesAuthorSelection = authorTeam !== undefined || selectedAuthors !== undefined;
+    const narrowsAuthors = authorTeam !== undefined || (selectedAuthors?.length ?? 0) > 0;
+    const teamMembers = yield* resolveAuthorTeam(authorTeam, projects);
+    const authorFilterStatus = usesAuthorSelection
+      ? {
+          authorFilterStatus:
+            teamMembers === null ? ("team-unavailable" as const) : ("applied" as const),
+          ...(authorTeam !== undefined && teamMembers !== null
+            ? {
+                authorTeamRevision: Hash.string(
+                  teamMembers
+                    .map((login) => login.toLowerCase())
+                    .sort()
+                    .join("\0"),
+                ).toString(36),
+              }
+            : {}),
+        }
+      : {};
+    const readFilters = new Map<
+      string,
+      {
+        readonly filters: PullRequestListFilters | undefined;
+        readonly authors: ReadonlySet<string>;
+      }
+    >();
+    for (const { host } of projects) {
+      const viewer = viewers[host];
+      if (viewer === undefined || readFilters.has(host)) continue;
+      const authors = new Set(resolvePullRequestAuthorLogins(input.filters, viewer));
+      if (authorTeam?.host.toLowerCase() === host) {
+        for (const login of teamMembers ?? []) authors.add(login.toLowerCase());
+      }
+      let filters = input.filters;
+      if (narrowsAuthors) {
+        if (authors.size === 0) continue;
+        if (involvement === "authored") {
+          const login = viewer.toLowerCase();
+          if (!authors.has(login)) continue;
+          authors.clear();
+          authors.add(login);
+        }
+        const logins = [...authors];
+        filters =
+          logins.length === 1
+            ? { ...otherFilters, author: logins[0]! }
+            : { ...otherFilters, authors: logins };
+      }
+      readFilters.set(host, { filters, authors });
+    }
+
     const selected =
       continuation === null
         ? projects
         : projects.filter(({ cursorKey }) => continuation.has(cursorKey));
-    const readable = selected.filter(({ host }) => viewers[host] !== undefined);
+    const readable = selected.filter(({ host }) => readFilters.has(host));
     const unreadable = selected
       .filter(({ host }) => viewers[host] === undefined)
       .map(({ project, repository }) => ({
@@ -1409,6 +1497,7 @@ export const make = Effect.gen(function* () {
       }));
     if (readable.length === 0) {
       const listResult: PullRequestListResult = {
+        ...authorFilterStatus,
         viewers: viewers as PullRequestListResult["viewers"],
         providers,
         entries: [],
@@ -1443,6 +1532,7 @@ export const make = Effect.gen(function* () {
       {
         const viewer = viewers[project.host]!;
         const key = project.cursorKey;
+        const { filters, authors } = readFilters.get(project.host)!;
         return project.api
           .listChangeRequests({
             cwd: project.project.workspaceRoot,
@@ -1453,7 +1543,7 @@ export const make = Effect.gen(function* () {
             viewer,
             limit,
             query: input.query,
-            filters: input.filters,
+            filters,
             ...(cursor === undefined
               ? {}
               : {
@@ -1482,7 +1572,7 @@ export const make = Effect.gen(function* () {
               return {
                 key,
                 entries: items
-                  .filter((item) => matchesRowFilters(item, input.filters, viewer))
+                  .filter((item) => matchesRowFilters(item, filters, authors))
                   .map((item) => toEntry({ project, item, viewer, observedAt })),
                 errors: [],
                 truncated: page.truncated,
@@ -1555,6 +1645,7 @@ export const make = Effect.gen(function* () {
         Effect.forEach(chunk, readRepository, { concurrency: REPOSITORY_CONCURRENCY });
       if (readAcross === undefined) return separately();
       const viewer = viewers[first.host]!;
+      const { filters, authors } = readFilters.get(first.host)!;
       const cursor = cursorOf(first);
       return readAcross({
         cwd: first.project.workspaceRoot,
@@ -1565,7 +1656,7 @@ export const make = Effect.gen(function* () {
         viewer,
         limit,
         query: input.query,
-        filters: input.filters,
+        filters,
         ...(cursor === undefined
           ? {}
           : {
@@ -1616,7 +1707,7 @@ export const make = Effect.gen(function* () {
               return Effect.succeed({
                 key: project.cursorKey,
                 entries: items
-                  .filter((item) => matchesRowFilters(item, input.filters, viewer))
+                  .filter((item) => matchesRowFilters(item, filters, authors))
                   .map((item) => toEntry({ project, item, viewer, observedAt })),
                 errors: [],
                 truncated: page.truncated,
@@ -1675,6 +1766,7 @@ export const make = Effect.gen(function* () {
     }
 
     return {
+      ...authorFilterStatus,
       viewers: viewers as PullRequestListResult["viewers"],
       providers,
       entries,
@@ -2700,6 +2792,39 @@ export const make = Effect.gen(function* () {
         },
         { concurrency: REPOSITORY_CONCURRENCY },
       ).pipe(Effect.map((pages) => pages.flat()));
+    if (input.kind === "teams") {
+      const organizations = new Map<
+        string,
+        Effect.Effect<ProviderFilterOptionPage<PullRequestAuthorTeam>, PullRequestProviderError>
+      >();
+      for (const { host, project, repository, api } of repositories) {
+        const [organization] = repository.split("/", 1);
+        if (!organization || api.listAuthorTeams === undefined) continue;
+        const key = `${host}/${organization.toLowerCase()}`;
+        if (!organizations.has(key)) {
+          organizations.set(
+            key,
+            api.listAuthorTeams({ cwd: project.workspaceRoot, host, organization }),
+          );
+        }
+      }
+      const answers = yield* Effect.forEach(organizations.values(), Effect.result, {
+        concurrency: REPOSITORY_CONCURRENCY,
+      });
+      const pages = answers.flatMap((answer) =>
+        answer._tag === "Success" ? [answer.success] : [],
+      );
+      const failure = answers.find((answer) => answer._tag === "Failure");
+      if (pages.length === 0 && failure !== undefined) {
+        return yield* toPullRequestError("filterOptions")(failure.failure);
+      }
+      const { items, truncated } = rankFilterOptions(pages, {
+        query: input.query,
+        keyOf: (team) => `${team.host}/${team.organization}/${team.slug}`,
+        textsOf: (team) => [team.slug, `${team.organization}/${team.slug}`],
+      });
+      return { labels: [], authors: [], references: [], teams: items, truncated };
+    }
     if (input.kind === "labels") {
       const pages = yield* gather<PullRequestLabel>((project) =>
         project.api.listRepositoryLabels?.(refOf(project)),
@@ -3064,22 +3189,6 @@ export const make = Effect.gen(function* () {
       `${everyFileRevisionEpoch}:${fileRevisionEpochs.get(refScope(ref)) ?? 0}`,
   });
 
-  const filtersOfKey = (
-    slots: ReadonlyArray<
-      string | ReadonlyArray<string> | ReadonlyArray<ReadonlyArray<string>> | null
-    >,
-  ): PullRequestListFilters => {
-    const [draft, review, checks, author, labels, excludedLabels] = slots;
-    return {
-      ...(typeof draft === "string" ? { draft: draft as "only" | "hide" } : {}),
-      ...(typeof review === "string" ? { review: review as PullRequestListFilters["review"] } : {}),
-      ...(typeof checks === "string" ? { checks: checks as PullRequestListFilters["checks"] } : {}),
-      ...(typeof author === "string" ? { author } : {}),
-      ...(Array.isArray(labels) ? { labels: labels as ReadonlyArray<ReadonlyArray<string>> } : {}),
-      ...(Array.isArray(excludedLabels) ? { excludedLabels } : {}),
-    };
-  };
-
   const persistedRead = Effect.fn("PullRequestService.persistedRead")(function* <A>(
     input: CredentialRef,
     operation: string,
@@ -3179,7 +3288,7 @@ export const make = Effect.gen(function* () {
         number,
         string,
         string | null,
-        ReadonlyArray<string | ReadonlyArray<string> | null> | null,
+        PullRequestListFilters | null,
         string | null,
         ReadonlyArray<string> | null,
         string | null,
@@ -3190,7 +3299,7 @@ export const make = Effect.gen(function* () {
       return listUncached({
         state,
         ...(involvement === null ? {} : { involvement }),
-        ...(filters === null ? {} : { filters: filtersOfKey(filters) }),
+        ...(filters === null ? {} : { filters }),
         ...(projectId === null ? {} : { projectId }),
         ...(projectIds === null ? {} : { projectIds }),
         ...(host === null ? {} : { host }),
@@ -3209,16 +3318,7 @@ export const make = Effect.gen(function* () {
       listingsEpoch,
       input.state,
       input.involvement ?? null,
-      input.filters === undefined
-        ? null
-        : [
-            input.filters.draft ?? null,
-            input.filters.review ?? null,
-            input.filters.checks ?? null,
-            input.filters.author ?? null,
-            input.filters.labels ?? null,
-            input.filters.excludedLabels ?? null,
-          ],
+      input.filters ?? null,
       input.projectId ?? null,
       input.projectIds === undefined ? null : [...input.projectIds].sort(),
       input.host ?? null,

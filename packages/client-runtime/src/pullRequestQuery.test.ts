@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { applyPullRequestDraftFilterChange, parsePullRequestQuery } from "./pullRequestQuery.ts";
+import {
+  applyPullRequestDraftFilterChange,
+  mergePullRequestListFilters,
+  parsePullRequestQuery,
+} from "./pullRequestQuery.ts";
 
 describe("reading qualifiers out of a typed query", () => {
   it("keeps quoted values whole and separates negation", () => {
@@ -67,8 +71,10 @@ describe("reading qualifiers out of a typed query", () => {
     ).toEqual({ text: "fix", filters: {} });
   });
 
-  it("sets no author when the query names more than one", () => {
-    expect(parsePullRequestQuery("author:alice author:bob").filters).toEqual({});
+  it("matches any distinct author named in the query", () => {
+    expect(parsePullRequestQuery("author:alice author:bob author:Alice").filters).toEqual({
+      authors: ["alice", "bob"],
+    });
     expect(parsePullRequestQuery("author:me author:@me").filters).toEqual({ author: "me" });
   });
 
@@ -83,6 +89,21 @@ describe("reading qualifiers out of a typed query", () => {
     expect(parsed.filters.author).toBe("x".repeat(200));
     expect(parsed.text).toBe("fix ".repeat(50).trim());
   });
+});
+
+it("uses typed authors for this search while preserving the menu selections", () => {
+  const menu = {
+    authors: ["alice", "bob"],
+    authorTeam: { host: "github.com", organization: "acme", slug: "platform" },
+    labels: [["bug"]],
+  };
+  expect(
+    mergePullRequestListFilters(menu, parsePullRequestQuery("author:charlie").filters),
+  ).toEqual({
+    author: "charlie",
+    labels: [["bug"]],
+  });
+  expect(mergePullRequestListFilters(menu, parsePullRequestQuery("fix").filters)).toEqual(menu);
 });
 
 describe("colon-namespaced labels typed as a search", () => {

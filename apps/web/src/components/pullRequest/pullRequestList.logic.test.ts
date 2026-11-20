@@ -16,6 +16,7 @@ import {
   findProjectForRepository,
   findScopedProject,
   mergePullRequestLists,
+  pullRequestAuthorFilterChanged,
   pullRequestEntryKey,
   groupPullRequestsByInvolvement,
   pullRequestStatsBatches,
@@ -418,6 +419,19 @@ describe("remembered pull request list controls", () => {
     expect(readPullRequestListPreferences(storage)).toEqual({ involvement: "all", state: "open" });
   });
 
+  it("restores legacy single-author preferences as one selected login", () => {
+    const storage = makeStorage();
+    storage.setItem(
+      "t3.pullRequests.preferences",
+      JSON.stringify({ involvement: "all", state: "open", author: "Alice" }),
+    );
+    expect(readPullRequestListPreferences(storage)).toEqual({
+      involvement: "all",
+      state: "open",
+      authors: ["Alice"],
+    });
+  });
+
   it("falls back when browser policy denies storage", () => {
     const denied = {
       getItem: () => {
@@ -472,6 +486,32 @@ describe("merging the environments' own listings", () => {
     ]);
 
     expect(merged?.entries.map((row) => row.number)).toEqual([3, 2, 1]);
+  });
+
+  it("excludes an older server's unfiltered rows when the listing requests an author team", () => {
+    const head = mergePullRequestLists(
+      [
+        [ENV_1, answer({ entries: [entry({ number: 1 })] })],
+        [
+          ENV_2,
+          answer({
+            entries: [entry({ number: 2 })],
+            authorFilterStatus: "applied",
+            authorTeamRevision: "first-roster",
+          }),
+        ],
+      ],
+      true,
+    )!;
+    const next = (roster: string) =>
+      mergePullRequestLists(
+        [[ENV_2, answer({ authorFilterStatus: "applied", authorTeamRevision: roster })]],
+        true,
+      )!;
+    expect(head.entries.map(({ number }) => number)).toEqual([2]);
+    expect(head.authorFilterUnsupported).toBe(true);
+    expect(pullRequestAuthorFilterChanged(head, next("first-roster"))).toBe(false);
+    expect(pullRequestAuthorFilterChanged(head, next("new-roster"))).toBe(true);
   });
 
   it("tags every row with the environment that read it, newest first", () => {

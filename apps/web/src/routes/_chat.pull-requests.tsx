@@ -1,34 +1,63 @@
-import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import {
+  MAX_PULL_REQUEST_AUTHOR_FILTERS,
+  PullRequestAuthorTeam,
+  type EnvironmentId,
+  type ProjectId,
+} from "@t3tools/contracts";
 import { createFileRoute } from "@tanstack/react-router";
+import * as Schema from "effect/Schema";
 
-import { type PullRequestListSort } from "../components/pullRequest/pullRequestListPreferences";
+import {
+  readPullRequestListPreferences,
+  type PullRequestListSort,
+} from "../components/pullRequest/pullRequestListPreferences";
 import { SORT_OPTIONS } from "../components/pullRequest/pullRequestListOptions";
 import { type PullRequestsSearch } from "../components/pullRequest/usePullRequestListView";
 import { PullRequestsPage } from "../components/pullRequest/PullRequestsPage";
 
-const MAX_SEARCH_LABEL_CANDIDATES = 100;
+const MAX_SEARCH_FILTER_CANDIDATES = 100;
+const decodeAuthorTeam = Schema.decodeUnknownOption(PullRequestAuthorTeam);
 
-function pullRequestSearchLabels(raw: unknown): PullRequestsSearch["labels"] {
+function pullRequestSearchFilterList(
+  raw: unknown,
+  limit: number,
+): ReadonlyArray<string> | undefined {
   const values = (Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : []).slice(
     0,
-    MAX_SEARCH_LABEL_CANDIDATES,
+    MAX_SEARCH_FILTER_CANDIDATES,
   );
-  const labels: Array<string> = [];
+  const selected: Array<string> = [];
   const seen = new Set<string>();
   for (const rawValue of values) {
     if (typeof rawValue !== "string") continue;
     const value = rawValue.trim().slice(0, 200);
     const key = value.toLowerCase();
     if (value.length === 0 || seen.has(key)) continue;
-    labels.push(value);
+    selected.push(value);
     seen.add(key);
-    if (labels.length === 10) break;
+    if (selected.length === limit) break;
   }
-  return labels.length === 0 ? undefined : labels;
+  return selected.length === 0 ? undefined : selected;
+}
+
+function pullRequestSearchAuthors(raw: Record<string, unknown>) {
+  if (raw.authors === undefined && raw.author === undefined && raw.authorTeam === undefined) {
+    const saved = readPullRequestListPreferences();
+    return { authors: saved.authors, authorTeam: saved.authorTeam };
+  }
+  const legacyAuthor = typeof raw.author === "string" ? raw.author : undefined;
+  const team = decodeAuthorTeam(raw.authorTeam);
+  return {
+    authors: pullRequestSearchFilterList(
+      raw.authors ?? legacyAuthor,
+      MAX_PULL_REQUEST_AUTHOR_FILTERS,
+    ),
+    authorTeam: team._tag === "Some" ? team.value : undefined,
+  };
 }
 
 export const Route = createFileRoute("/_chat/pull-requests")({
-  validateSearch: (raw: Record<string, unknown>): PullRequestsSearch => ({
+  validateSearch: (raw: Record<string, unknown>): PullRequestsSearch & { author?: undefined } => ({
     ...(typeof raw.selectedUrl === "string" ? { selectedUrl: raw.selectedUrl.slice(0, 4096) } : {}),
     involvement:
       raw.involvement === "reviewing" || raw.involvement === "authored" ? raw.involvement : "all",
@@ -69,11 +98,10 @@ export const Route = createFileRoute("/_chat/pull-requests")({
       ? { review: raw.review }
       : {}),
     ...(raw.checks === "passing" || raw.checks === "failing" ? { checks: raw.checks } : {}),
-    author:
-      typeof raw.author === "string" && raw.author.trim()
-        ? raw.author.trim().slice(0, 200)
-        : undefined,
-    labels: pullRequestSearchLabels(raw.labels),
+    // Override the parent's unvalidated legacy key as well as the current keys.
+    author: undefined,
+    ...pullRequestSearchAuthors(raw),
+    labels: pullRequestSearchFilterList(raw.labels, 10),
   }),
   component: PullRequestsPage,
 });

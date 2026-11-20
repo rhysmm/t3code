@@ -5,7 +5,12 @@ import {
 } from "@t3tools/client-runtime/state/pull-requests";
 import { RegistryContext, useAtomMount, useAtomSubscribe, useAtomValue } from "@effect/atom-react";
 import { executeAtomQuery, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, PullRequestDiffStat, PullRequestListInput } from "@t3tools/contracts";
+import {
+  pullRequestAuthorFilterKey,
+  type EnvironmentId,
+  type PullRequestDiffStat,
+  type PullRequestListInput,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
@@ -54,11 +59,13 @@ const sourcesFamily = Atom.family((key: string) => {
   return Atom.make((get) =>
     targets.map((target) => {
       const pages = currentPages(get, target);
+      const authorFilterUnsupported = pages !== null && !supportsAuthorFilter(target.input, pages);
       return {
         target,
         result: get(composerPullRequests.list(target)),
+        authorFilterUnsupported,
         pages:
-          pages === null
+          pages === null || authorFilterUnsupported
             ? null
             : {
                 ...pages,
@@ -72,10 +79,20 @@ const sourcesFamily = Atom.family((key: string) => {
   );
 });
 
+function supportsAuthorFilter(input: PullRequestListInput, pages: PullRequestListPages): boolean {
+  return (
+    pages.head.authorFilterStatus !== undefined ||
+    (input.filters?.authorTeam === undefined && !input.filters?.authors?.length)
+  );
+}
+
 function continuations(registry: AtomRegistry.AtomRegistry, targets: readonly ListTarget[]) {
   return targets.flatMap((target) => {
     const pages = currentPages((atom) => registry.get(atom), target);
-    const input = pages && nextPullRequestListInput(pages, target.input);
+    const input =
+      pages &&
+      supportsAuthorFilter(target.input, pages) &&
+      nextPullRequestListInput(pages, target.input);
     return pages && input ? [{ target, pages, input }] : [];
   });
 }
@@ -102,11 +119,14 @@ async function loadNextPages(
       if (response.value.errors.length)
         throw new Error(response.value.errors.map((error) => error.message).join("\n"));
       const pagesAtom = pullRequestListPagesFamily(pullRequestListPagesKey(target));
-      const next = appendPullRequestListPage(
-        currentPages((atom) => registry.get(atom), target) ?? pages,
-        response.value,
-        input,
-      );
+      const previous = currentPages((atom) => registry.get(atom), target) ?? pages;
+      if (
+        pullRequestAuthorFilterKey(response.value) !== pullRequestAuthorFilterKey(previous.head)
+      ) {
+        registry.refresh(composerPullRequests.list(target));
+        return;
+      }
+      const next = appendPullRequestListPage(previous, response.value, input);
       registry.set(pagesAtom, next);
       if (
         input.cursors &&
@@ -356,6 +376,10 @@ export function usePullRequestList(targets: readonly ListTarget[]) {
     refreshing: refresh.waiting,
     loadingMore: page.waiting,
     loadMoreError: loadError,
+    authorFilterUnsupported: sources.some(({ authorFilterUnsupported }) => authorFilterUnsupported),
+    authorTeamUnavailable: sources.some(
+      ({ pages }) => pages?.head.authorFilterStatus === "team-unavailable",
+    ),
     hasMore: sources.some(
       ({ pages, target }) => pages && nextPullRequestListInput(pages, target.input),
     ),

@@ -78,5 +78,18 @@
   "d109f7bbda29eaab": "Next page",
   "963c1be30e80f725": "First page",
   "5c1b45070ec896ee": "Thread checkout",
-  "6f22c0ae3e927a27": "Switch checkout"
+  "6f22c0ae3e927a27": "Switch checkout",
+  "ff6b088c383bf910": "Search authors",
+  "d6179a157948c07c": "No authors found",
+  "353773803bf92ad4": "Couldn't search authors on the host",
+  "e3e2d073449a0289": "Anyone",
+  "3b4bcc2b61048204": "Search GitHub teams",
+  "c5bf72bf43b2efc5": "Clear authors",
+  "54dfecd33a02d7c8": "Authors",
+  "464180a915c3b0db": "No team",
+  "31d5360388cb9a35": "Couldn't load GitHub teams",
+  "cf39601ae8d0246d": "No GitHub teams found",
+  "1de0a9b2badf445d": "Author team",
+  "f01b2fe280a88f9c": "Update older T3 Code servers to include their pull requests in this author filter.",
+  "2ea146f9a9ace957": "Couldn't load the GitHub team's members. Check the server's GitHub connection."
 }

@@ -6,6 +6,7 @@ import type {
   PullRequestAction,
   PullRequestStackHead,
   PullRequestActor,
+  PullRequestAuthorTeam,
   PullRequestReferenceCandidate,
   PullRequestReferenceSigil,
   PullRequestBaseComparison,
@@ -605,6 +606,16 @@ export interface PullRequestProviderApi {
     ProviderFilterOptionPage<PullRequestReferenceCandidate>,
     PullRequestProviderError
   >;
+
+  readonly listAuthorTeams?: (input: {
+    readonly cwd: string;
+    readonly host: string;
+    readonly organization: string;
+  }) => Effect.Effect<ProviderFilterOptionPage<PullRequestAuthorTeam>, PullRequestProviderError>;
+
+  readonly listAuthorTeamMembers?: (
+    input: PullRequestAuthorTeam & { readonly cwd: string },
+  ) => Effect.Effect<ReadonlyArray<string>, PullRequestProviderError>;
 
   readonly setLabels?: (
     input: ProviderRepositoryRef & {

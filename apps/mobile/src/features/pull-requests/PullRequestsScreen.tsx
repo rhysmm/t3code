@@ -18,6 +18,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { useContentTopInset } from "../../components/ui/useBarInset";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { useGT } from "gt-react-native";
 import { NativePrimaryColumnContext } from "../../native/v5-workspace-context";
 import { useNativeColumnLayoutMetrics } from "../../native/native-layout-metrics";
 import { useWorkspaceState } from "../../state/workspace";
@@ -94,6 +95,7 @@ export function PullRequestsScreen(
   } = {},
 ) {
   const navigation = useNavigation();
+  const gt = useGT();
   const primaryColumn = use(NativePrimaryColumnContext);
   const workspace = useWorkspaceTabs()!;
   const { environments } = useWorkspaceState();
@@ -253,7 +255,10 @@ export function PullRequestsScreen(
         kind,
         environmentId,
         environmentIds: targets.map((target) => String(target.environmentId)),
-        suggestions: knownFacets.environmentId === environmentId ? knownFacets[kind] : facets[kind],
+        suggestions:
+          kind === "teams"
+            ? []
+            : (knownFacets.environmentId === environmentId ? knownFacets : facets)[kind],
         labelColors,
       }),
   });
@@ -320,6 +325,14 @@ export function PullRequestsScreen(
         ListHeaderComponent={
           <>
             <PullRequestListFilters sidebar={sidebar} filters={filters} />
+            {result.authorFilterUnsupported ? (
+              <PullRequestListError
+                message={gt("Update the environment to use this author filter.")}
+              />
+            ) : null}
+            {result.authorTeamUnavailable ? (
+              <PullRequestListError message={gt("Couldn't load GitHub team members.")} />
+            ) : null}
             {result.data?.errors.length ? (
               <View key={JSON.stringify(targets)}>
                 {result.data.errors.map((error) => (

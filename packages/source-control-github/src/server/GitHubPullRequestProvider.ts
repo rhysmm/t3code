@@ -707,6 +707,12 @@ export const make = Effect.gen(function* () {
     searchRepositoryAuthors: (input) =>
       cli.searchRepositoryAuthors(input).pipe(Effect.mapError(fail("searchRepositoryAuthors"))),
 
+    listAuthorTeams: (input) =>
+      cli.listAuthorTeams(input).pipe(Effect.mapError(fail("listAuthorTeams"))),
+
+    listAuthorTeamMembers: (input) =>
+      cli.listAuthorTeamMembers(input).pipe(Effect.mapError(fail("listAuthorTeamMembers"))),
+
     searchRepositoryReferences: (input) =>
       cli
         .searchRepositoryReferences(input)

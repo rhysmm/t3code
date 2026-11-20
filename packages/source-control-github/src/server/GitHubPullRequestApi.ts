@@ -22,12 +22,14 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import {
-  resolvePullRequestAuthorFilter,
+  MAX_PULL_REQUEST_AUTHOR_FILTERS,
+  resolvePullRequestAuthorLogins,
   PositiveInt,
   TrimmedNonEmptyString,
   type PullRequestAction,
   type PullRequestStackHead,
   type PullRequestActor,
+  type PullRequestAuthorTeam,
   type PullRequestReferenceCandidate,
   type PullRequestComment,
   type PullRequestCommit,
@@ -750,6 +752,19 @@ export class GitHubPullRequestApi extends Context.Service<
       GitHubPullRequestApiError
     >;
 
+    readonly listAuthorTeams: (input: {
+      readonly cwd: string;
+      readonly host: string;
+      readonly organization: string;
+    }) => Effect.Effect<
+      { readonly items: ReadonlyArray<PullRequestAuthorTeam>; readonly truncated: boolean },
+      GitHubPullRequestApiError
+    >;
+
+    readonly listAuthorTeamMembers: (
+      input: PullRequestAuthorTeam & { readonly cwd: string },
+    ) => Effect.Effect<ReadonlyArray<string>, GitHubPullRequestApiError>;
+
     readonly setLabels: (input: {
       readonly cwd: string;
       readonly repository: string;
@@ -866,17 +881,19 @@ function qualifierValue(value: string): string {
 function filterQualifiers(
   filters: PullRequestListFilters | undefined,
   viewer: string,
+  involvement: PullRequestInvolvement,
 ): ReadonlyArray<string> {
   if (filters === undefined) return [];
+  const authors = resolvePullRequestAuthorLogins(filters, viewer);
   return [
     // Commas within a qualifier mean OR to GitHub.
     ...(filters.labels ?? []).flatMap((group) =>
       group.length === 0 ? [] : [`label:${group.map(qualifierValue).join(",")}`],
     ),
     ...(filters.excludedLabels ?? []).map((label) => `-label:${qualifierValue(label)}`),
-    ...(filters.author === undefined
+    ...(involvement === "authored" || authors.length > MAX_PULL_REQUEST_AUTHOR_FILTERS
       ? []
-      : [`author:${qualifierValue(resolvePullRequestAuthorFilter(filters.author, viewer))}`]),
+      : authors.map((login) => `author:${qualifierValue(login)}`)),
     ...(filters.draft === undefined ? [] : [`draft:${filters.draft === "only"}`]),
     ...(filters.review === undefined ? [] : [`review:${REVIEW_QUALIFIERS[filters.review]}`]),
     ...(filters.checks === undefined
@@ -888,7 +905,7 @@ function filterQualifiers(
 function matchesFilters(
   item: GitHubPullRequestListItem,
   filters: PullRequestListFilters | undefined,
-  viewer: string,
+  authors: ReadonlySet<string>,
 ): boolean {
   if (filters === undefined) return true;
   const labels = new Set(item.labels.map((label) => label.name.trim().toLowerCase()));
@@ -902,9 +919,7 @@ function matchesFilters(
     (filters.checks === undefined || item.checksState === filters.checks) &&
     (filters.labels === undefined || filters.labels.every((group) => group.some(holds))) &&
     (filters.excludedLabels === undefined || !filters.excludedLabels.some(holds)) &&
-    (filters.author === undefined ||
-      item.author?.login.toLowerCase() ===
-        resolvePullRequestAuthorFilter(filters.author, viewer).toLowerCase())
+    (authors.size === 0 || (item.author !== null && authors.has(item.author.login.toLowerCase())))
   );
 }
 
@@ -916,6 +931,7 @@ function matchesUnsortedListing(
     readonly viewer: string;
     readonly filters?: PullRequestListFilters | undefined;
   },
+  authors: ReadonlySet<string>,
 ): boolean {
   const matchesState = input.state === "all" || item.state === input.state;
   const viewer = input.viewer.toLowerCase();
@@ -925,7 +941,7 @@ function matchesUnsortedListing(
       ? item.author?.login.toLowerCase() === viewer
       : item.hasTeamReviewRequest ||
         item.reviewRequestLogins.some((login) => login.toLowerCase() === viewer));
-  return matchesState && matchesInvolvement && matchesFilters(item, input.filters, input.viewer);
+  return matchesState && matchesInvolvement && matchesFilters(item, input.filters, authors);
 }
 
 const SEARCH_REPOSITORY = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
@@ -953,7 +969,7 @@ function searchQuery(input: {
     ...(input.involvement === "reviewing" ? [`review-requested:${input.viewer}`] : []),
     ...(query.length === 0 ? [] : [searchPhrase(query)]),
     ...(input.cursor === undefined ? [] : [`updated:<=${input.cursor.updatedBefore}`]),
-    ...filterQualifiers(input.filters, input.viewer),
+    ...filterQualifiers(input.filters, input.viewer, input.involvement),
     "sort:updated-desc",
     ...repositories.map((repository) => `repo:${repository}`),
   ].join(" ");
@@ -989,6 +1005,13 @@ const PullRequestGraphQLGroup = GraphQLGroup.merge(
   PullRequestReviewsGraphQLGroup,
   PullRequestMutationsGraphQLGroup,
 ).middleware(GitHubGraphQlClient.GitHubGraphQlAuth);
+
+const decodeAuthorTeams = Schema.decodeUnknownResult(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ slug: TrimmedNonEmptyString }))),
+);
+const decodeAuthorTeamMembers = Schema.decodeUnknownResult(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ login: TrimmedNonEmptyString }))),
+);
 
 interface RestReadInput<A> {
   readonly cwd: string;
@@ -1287,9 +1310,10 @@ export const make = Effect.gen(function* () {
   });
   const revalidatedRestRead = Effect.fn("GitHubPullRequestApi.revalidatedRestRead")(function* <A>(
     input: RestReadInput<A>,
+    credential?: GitHubRequestPolicy.GitHubHeldCredential,
   ) {
     const host = normalizeHost(input.host);
-    const { token, fingerprint } = yield* api.credential(host);
+    const { token, fingerprint } = credential ?? (yield* api.credential(host));
     const key = `${fingerprint}\0${host}\0${input.path}`;
     const previous = yield* Cache.get(validators, key);
     const response = yield* api
@@ -1316,6 +1340,58 @@ export const make = Effect.gen(function* () {
       ? Cache.set(validators, key, Option.some({ etag, body: response.body }))
       : Cache.invalidate(validators, key);
     return decoded;
+  });
+
+  const authorTeamDirectories = yield* Cache.make({
+    capacity: 128,
+    timeToLive: "1 minute",
+    lookup: (_key: string) =>
+      Effect.succeed(Option.none<ReadonlyArray<{ readonly slug: string }>>()),
+  });
+  const readAuthorTeamPages = Effect.fn("GitHubPullRequestApi.readAuthorTeamPages")(function* <A>(
+    input: RestReadInput<ReadonlyArray<A>>,
+    directoryCache?: Cache.Cache<string, Option.Option<ReadonlyArray<A>>>,
+  ) {
+    const read = Effect.fnUntraced(function* (
+      credential: GitHubRequestPolicy.GitHubHeldCredential,
+    ) {
+      const key = `${credential.fingerprint}\0${normalizeHost(input.host)}\0${input.path.toLowerCase()}`;
+      if (directoryCache !== undefined) {
+        const cached = yield* Cache.get(directoryCache, key);
+        if (Option.isSome(cached)) return cached.value;
+      }
+      const items: A[] = [];
+      for (let page = 1; ; page += 1) {
+        const rows = yield* revalidatedRestRead(
+          { ...input, path: `${input.path}?per_page=100&page=${page}` },
+          credential,
+        );
+        items.push(...rows);
+        if (rows.length < 100) break;
+      }
+      if (directoryCache !== undefined) {
+        yield* Cache.set(directoryCache, key, Option.some(items));
+      }
+      return items;
+    });
+    const credential = yield* api.credential(input.host);
+    return yield* read(credential).pipe(
+      Effect.catchIf(
+        (error) =>
+          credential.source === "app" &&
+          (error._tag === "GitHubApiNotFoundError" ||
+            (error._tag === "GitHubApiResponseError" &&
+              error.status === 403 &&
+              error.githubErrors?.some((message) =>
+                /not accessible by integration/i.test(message),
+              ) === true)),
+        (error) =>
+          api.credential(input.host, { personal: true }).pipe(
+            Effect.mapError(() => error),
+            Effect.flatMap(read),
+          ),
+      ),
+    );
   });
 
   const diffFilesPage = (input: {
@@ -1871,6 +1947,7 @@ export const make = Effect.gen(function* () {
 
     listPullRequests: Effect.fn("GitHubPullRequestApi.listPullRequests")(function (input) {
       const fallbackMaxRows = Math.max(input.limit + 1, PULL_REQUEST_FALLBACK_MAX_ROWS);
+      const authors = new Set(resolvePullRequestAuthorLogins(input.filters, input.viewer));
       const { owner, name } = parseRepositorySelector(input.repository);
       const query = searchQuery({ ...input, repositories: [input.repository] });
       if (query === null) {
@@ -1932,7 +2009,7 @@ export const make = Effect.gen(function* () {
           Effect.flatMap(({ items: rawItems, rawCount, truncated: cutShort }) => {
             const items = continues
               ? rawItems.filter((item) => !isSeen(item))
-              : rawItems.filter((item) => matchesUnsortedListing(item, input));
+              : rawItems.filter((item) => matchesUnsortedListing(item, input, authors));
             if (
               !continues &&
               items.length < input.limit &&
@@ -2547,6 +2624,38 @@ export const make = Effect.gen(function* () {
           graphql({ ...input, operation: "searchRepositoryReferences", allowReserve: true }),
           Effect.map(toRepositoryReferences),
         );
+      },
+    ),
+
+    listAuthorTeams: Effect.fn("GitHubPullRequestApi.listAuthorTeams")(function* (input) {
+      const { cwd, host, organization } = input;
+      const teams = yield* readAuthorTeamPages(
+        {
+          cwd,
+          host,
+          operation: "listAuthorTeams",
+          path: `orgs/${encodeURIComponent(organization)}/teams`,
+          decode: decodeAuthorTeams,
+        },
+        authorTeamDirectories,
+      ).pipe(Effect.catchTags({ GitHubApiNotFoundError: () => Effect.succeed([]) }));
+      return {
+        items: teams.map(({ slug }) => ({ host, organization, slug })),
+        truncated: false,
+      };
+    }),
+
+    listAuthorTeamMembers: Effect.fn("GitHubPullRequestApi.listAuthorTeamMembers")(
+      function* (input) {
+        const { cwd, host, organization, slug } = input;
+        const members = yield* readAuthorTeamPages({
+          cwd,
+          host,
+          operation: "listAuthorTeamMembers",
+          path: `orgs/${encodeURIComponent(organization)}/teams/${encodeURIComponent(slug)}/members`,
+          decode: decodeAuthorTeamMembers,
+        });
+        return members.map(({ login }) => login);
       },
     ),
 

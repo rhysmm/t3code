@@ -22,6 +22,7 @@ import type {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { T } from "gt-react";
 import { ArrowDownUpIcon, LayersIcon, Plug2Icon } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState, type ComponentProps } from "react";
 
@@ -29,6 +30,7 @@ import {
   collectPullRequestListFacets,
   narrowPullRequestsToFilters,
   mergePullRequestDiffStats,
+  pullRequestAuthorFilterChanged,
   pullRequestDiffStatKey,
   pullRequestEntryKey,
   rankPullRequestMatches,
@@ -272,7 +274,8 @@ export function PullRequestsPage() {
           ...(next.draft ? { draft: next.draft } : {}),
           ...(next.review ? { review: next.review } : {}),
           ...(next.checks ? { checks: next.checks } : {}),
-          ...(next.author ? { author: next.author } : {}),
+          ...(next.authors?.length ? { authors: next.authors } : {}),
+          ...(next.authorTeam ? { authorTeam: next.authorTeam } : {}),
           ...(next.labels && next.labels.length > 0 ? { labels: next.labels } : {}),
         };
       },
@@ -318,7 +321,15 @@ export function PullRequestsPage() {
   const turnRefreshToken = turnRefreshes
     .map(([environmentId, revision]) => `${environmentId}:${revision}`)
     .join("|");
-  const scopeKey = `${environmentKey}:${assignmentKey}:${search.state}:${search.involvement}:${scopedProjectId ?? ""}:${search.host ?? ""}:${search.draft ?? ""}:${search.review ?? ""}:${search.checks ?? ""}:${search.author ?? ""}:${search.labels?.join("\u0000") ?? ""}`;
+  const scopeKey = JSON.stringify([
+    environmentKey,
+    assignmentKey,
+    search.state,
+    search.involvement,
+    scopedProjectId,
+    search.host,
+    menuFilters,
+  ]);
   const filterKey = `${scopeKey}:${sentQuery}`;
   const statsScope: PullRequestStatsScope = { key: filterKey, policy: statsPolicy };
   const [page, setPage] = useState<{
@@ -540,6 +551,22 @@ export function PullRequestsPage() {
     }
   }
   const settledList = listQuery.data !== null && !listQuery.isPending ? listQuery.data : null;
+  const restartAuthorFilter =
+    sentCursors !== null &&
+    settledList !== null &&
+    ordered?.key === filterKey &&
+    pullRequestAuthorFilterChanged(ordered.source, settledList);
+  if (restartAuthorFilter) {
+    setPage({
+      key: filterKey,
+      size: Math.min(pageSize + PAGE_SIZE, MAX_PAGE_SIZE),
+      cursors: null,
+      regrown: [],
+      turn: turnRefreshToken,
+    });
+    setOrdered(null);
+    setLoaded(null);
+  }
   const answeredPartitions =
     partitionsWanted && baselineEmpty
       ? EMPTY_PARTITIONS
@@ -558,6 +585,7 @@ export function PullRequestsPage() {
         ? ordered.entries
         : settledList.entries;
   if (
+    !restartAuthorFilter &&
     settledList !== null &&
     loadedEntries !== null &&
     (loaded === null ||
@@ -578,8 +606,15 @@ export function PullRequestsPage() {
       ...(nextPartitions === undefined ? {} : { partitions: nextPartitions }),
     });
   }
+  const teamWanted = localFilters.authorTeam !== undefined;
+  const canUseSentRows = !teamWanted || filters.authorTeam !== undefined;
   const narrowed = (() => {
-    if (loaded === null || loaded.environmentKey !== environmentKey || loaded.scope === scopeKey) {
+    if (
+      teamWanted ||
+      loaded === null ||
+      loaded.environmentKey !== environmentKey ||
+      loaded.scope === scopeKey
+    ) {
       return null;
     }
     const entries = narrowPullRequestsToFilters(loaded.data.entries, {
@@ -592,21 +627,25 @@ export function PullRequestsPage() {
   // A grown page is read by the list and nothing else: the baseline always asks for one page, so
   // a host with no cursor to continue from — where "more" means asking for a longer page — would
   // have its extra rows thrown away for the ninety-nine the baseline keeps answering with.
-  const answered =
-    (sentQuery.length === 0 && sentCursors === null && pageSize === PAGE_SIZE
-      ? baselineQuery.data
-      : listQuery.data) ??
-    (loaded?.scope === scopeKey && loaded.query === sentQuery ? loaded.data : null);
-  const carried =
-    (sentQuery.length === 0 ? baselineQuery.data : undefined) ??
-    (loaded?.scope === scopeKey ? loaded.data : null) ??
-    narrowed;
+  const answered = canUseSentRows
+    ? ((sentQuery.length === 0 && sentCursors === null && pageSize === PAGE_SIZE
+        ? baselineQuery.data
+        : listQuery.data) ??
+      (loaded?.scope === scopeKey && loaded.query === sentQuery ? loaded.data : null))
+    : baselineQuery.data;
+  // Only a response to the saved filters can vet carried rows for team membership.
+  const carried = teamWanted
+    ? baselineQuery.data
+    : ((sentQuery.length === 0 ? baselineQuery.data : undefined) ??
+      (loaded?.scope === scopeKey ? loaded.data : null) ??
+      narrowed);
   const listData = answered ?? carried;
   const showingCarried = answered === null && carried !== null;
   const loadingMore = listQuery.isPending && listData !== null;
   const firstLoad = listQuery.isPending && listData === null;
 
   if (
+    !restartAuthorFilter &&
     answered !== null &&
     !listQuery.isPending &&
     !(listQuery.error && listQuery.data === null) &&
@@ -734,7 +773,8 @@ export function PullRequestsPage() {
     search.state,
   );
 
-  const heldEntries = ordered?.key === filterKey ? ordered.entries : (listData?.entries ?? []);
+  const heldEntries =
+    canUseSentRows && ordered?.key === filterKey ? ordered.entries : (listData?.entries ?? []);
   const overlayInput = { state: search.state, filters };
   const shownEntries = usePendingListEntries(overlayInput, heldEntries);
   const shownBaseline = usePendingListEntries(
@@ -1239,6 +1279,25 @@ export function PullRequestsPage() {
     (!querySettled || (showingCarried && listQuery.isPending));
   const listBody = (
     <>
+      {listData?.authorFilterUnsupported || listData?.authorTeamUnavailable ? (
+        <div
+          role="status"
+          className="grid gap-1 rounded-lg border border-warning/30 bg-warning-surface px-3 py-2 text-xs"
+        >
+          {listData.authorFilterUnsupported ? (
+            <p>
+              <T>
+                Update older T3 Code servers to include their pull requests in this author filter.
+              </T>
+            </p>
+          ) : null}
+          {listData.authorTeamUnavailable ? (
+            <p>
+              <T>Couldn't load the GitHub team's members. Check the server's GitHub connection.</T>
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       {!capabilityKnown ? (
         <PullRequestListGhost rows={7} caption="Loading pull requests…" />
       ) : !pullRequestsSupported ? (
@@ -1383,13 +1442,18 @@ export function PullRequestsPage() {
           draft: next.draft,
           review: next.review,
           checks: next.checks,
-          author: next.author,
+          authors: next.authors ?? (next.author ? [next.author] : undefined),
+          authorTeam: next.authorTeam,
           labels: next.labels?.flatMap((group) => group),
         });
       }}
       authorOptions={facets.authors}
       labelOptions={facets.labels}
       optionScope={filterOptionScope}
+      canFilterByAuthorTeam={hostEntries.some(
+        (entry) =>
+          entry.kind === "github" && (search.host === undefined || search.host === entry.host),
+      )}
       host={search.host}
       hostOptions={hostMenuOptions}
       onHost={(host) => updateListScope({ host })}

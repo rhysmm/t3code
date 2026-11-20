@@ -1,11 +1,19 @@
 import { pullRequestFilterProjects } from "@t3tools/client-runtime/pull-request-project-filter";
-import { parsePullRequestQuery } from "@t3tools/client-runtime/pull-request-query";
 import {
+  mergePullRequestListFilters,
+  parsePullRequestQuery,
+} from "@t3tools/client-runtime/pull-request-query";
+import {
+  MAX_PULL_REQUEST_AUTHOR_FILTERS,
   ProjectId,
+  matchesPullRequestAuthorFilter,
+  pullRequestAuthorFilterKey,
   resolvePullRequestAuthorFilter,
   type EnvironmentId,
+  type PullRequestAuthorTeam,
   type PullRequestDiffStat,
   type PullRequestListEntry,
+  type PullRequestListFilters,
   type PullRequestListInput,
   type PullRequestListResult,
   type PullRequestListStatsInput,
@@ -21,6 +29,36 @@ export const DEFAULT_PR_LIST_CONTROLS: PullRequestListControls = {
   filters: {},
   sort: "updated",
 };
+
+export function selectedPullRequestAuthors(filters: PullRequestListFilters): readonly string[] {
+  return filters.authors?.length ? filters.authors : filters.author ? [filters.author] : [];
+}
+
+export function pullRequestAuthorKey(login: string): string {
+  return resolvePullRequestAuthorFilter(login, "me").toLowerCase();
+}
+
+export function togglePullRequestAuthor(
+  filters: PullRequestListFilters,
+  login: string,
+): PullRequestListFilters {
+  const selected = selectedPullRequestAuthors(filters);
+  const key = pullRequestAuthorKey(login);
+  const remaining = selected.filter((author) => pullRequestAuthorKey(author) !== key);
+  const authors =
+    remaining.length < selected.length
+      ? remaining
+      : [...selected, login].slice(0, MAX_PULL_REQUEST_AUTHOR_FILTERS);
+  return { ...filters, author: undefined, authors: authors.length ? authors : undefined };
+}
+
+export function pullRequestTeamLabel(team: PullRequestAuthorTeam): string {
+  return `${team.organization}/${team.slug}`;
+}
+
+export function pullRequestTeamKey(team: PullRequestAuthorTeam): string {
+  return `${team.host}/${pullRequestTeamLabel(team)}`.toLowerCase();
+}
 
 export function withoutScratchProjectScope(
   controls: PullRequestListControls,
@@ -260,7 +298,8 @@ export function pullRequestListHead(
   head: PullRequestListResult,
 ): PullRequestListPages {
   if (previous?.head === head) return previous;
-  return previous?.continued
+  return previous?.continued &&
+    pullRequestAuthorFilterKey(previous.head) === pullRequestAuthorFilterKey(head)
     ? { ...previous, head, entries: mergePullRequestListEntries(previous.entries, head.entries) }
     : {
         head,
@@ -305,10 +344,15 @@ export function pullRequestListInput(
   query: string,
 ): PullRequestListInput {
   const parsed = parsePullRequestQuery(query);
+  const filters = mergePullRequestListFilters(controls.filters, parsed.filters);
+  const singleAuthor = filters.authors?.length === 1 ? filters.authors[0] : undefined;
   return {
     state: controls.state,
     involvement: controls.involvement,
-    filters: { ...controls.filters, ...parsed.filters },
+    filters:
+      singleAuthor === undefined
+        ? filters
+        : { ...filters, author: singleAuthor, authors: undefined },
     limit: PR_LIST_PAGE_SIZE,
     ...(controls.projectId ? { projectId: ProjectId.make(controls.projectId) } : {}),
     ...(parsed.text ? { query: parsed.text } : {}),
@@ -410,7 +454,9 @@ export function filterPullRequestList<
   const normalize = (value: string) => value.toLowerCase();
   const parsed = parsePullRequestQuery(query);
   const words = parsed.text.toLowerCase().split(/\s+/).filter(Boolean);
-  const filters = { ...controls.filters, ...parsed.filters };
+  const filters = mergePullRequestListFilters(controls.filters, parsed.filters);
+  const hasIndividuals = selectedPullRequestAuthors(filters).length > 0;
+  const teamHost = filters.authorTeam?.host.toLowerCase();
   const filtered = entries.filter((entry) => {
     if (controls.state !== "all" && entry.state !== controls.state) return false;
     if (controls.projectId && entry.projectId !== controls.projectId) return false;
@@ -426,9 +472,9 @@ export function filterPullRequestList<
       return false;
     if ((filters.draft === "only" && !entry.isDraft) || (filters.draft === "hide" && entry.isDraft))
       return false;
-    if (filters.author) {
-      const author = resolvePullRequestAuthorFilter(filters.author, viewer);
-      if (normalize(entry.author?.login ?? "") !== normalize(author)) return false;
+    if (teamHost === undefined || entry.host.toLowerCase() !== teamHost) {
+      if (teamHost !== undefined && !hasIndividuals) return false;
+      if (!matchesPullRequestAuthorFilter(filters, entry.author?.login, viewer)) return false;
     }
     if (filters.review && entry.reviewDecision && entry.reviewDecision !== filters.review)
       return false;

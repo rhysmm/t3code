@@ -1,6 +1,9 @@
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
-import { parsePullRequestQuery } from "@t3tools/client-runtime/pull-request-query";
+import {
+  mergePullRequestListFilters,
+  parsePullRequestQuery,
+} from "@t3tools/client-runtime/pull-request-query";
 import {
   type EnvironmentId,
   type ProjectId,
@@ -213,17 +216,22 @@ export function usePullRequestQueryFilters(search: PullRequestsSearch, typedQuer
   const typedParsed = parsePullRequestQuery(typedQuery);
   const sentParsed = parsePullRequestQuery(sentQuery);
 
-  const menuFilters = {
+  const menuFilters: PullRequestListFilters = {
     ...(search.draft ? { draft: search.draft } : {}),
     ...(search.review ? { review: search.review } : {}),
     ...(search.checks ? { checks: search.checks } : {}),
-    ...(search.author ? { author: search.author } : {}),
+    ...(search.authors?.length === 1
+      ? { author: search.authors[0]! }
+      : search.authors?.length
+        ? { authors: search.authors }
+        : {}),
+    ...(search.authorTeam ? { authorTeam: search.authorTeam } : {}),
     ...(search.labels ? { labels: search.labels.map((label) => [label]) } : {}),
   };
   const menuFiltered = Object.keys(menuFilters).length > 0;
-  const filters = { ...menuFilters, ...sentParsed.filters };
+  const filters = mergePullRequestListFilters(menuFilters, sentParsed.filters);
   const hasFilters = Object.keys(filters).length > 0;
-  const localFilters = { ...menuFilters, ...typedParsed.filters };
+  const localFilters = mergePullRequestListFilters(menuFilters, typedParsed.filters);
   const hasLocalFilters = Object.keys(localFilters).length > 0;
   return {
     sentQuery,
