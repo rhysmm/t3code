@@ -10,14 +10,10 @@ rebases, the files Git brought in are left out. A file stays in the list when th
 committed it, or fixed a conflict in it. Use the branch comparison to review everything that changed
 against your base branch. Restore still returns the complete saved workspace.
 
-For a thread that spans several repositories, open **Changes** or **Uncommitted** and
-use **Add checkout** in the Diff pane, or **Review checkouts** on mobile. Choose a
-project and its exact checkout. **All checkouts** groups the current Git changes
-by checkout. On web and desktop, select a file to open its patch. On mobile, open
-a checkout to browse its patches. **Changes** compares each checkout
-with its base branch, and **Uncommitted** shows local edits. These views include
-changes that were already present in the selected checkout. To review a detached
-worktree, add its folder as a project first.
+To inspect another repository or worktree, open **Changes** or **Uncommitted** and choose a
+checkout in the Diff pane or mobile Review. The viewer shows the selected checkout's current Git
+diff. Choose **Thread checkout** to return to the thread's working directory. This selection lasts
+while the viewer is open. To review a detached worktree, add its folder as a project first.
 
 On web and desktop, open the Diff pane source picker and choose **Commits** to review one local
 commit at a time. The list shows the newest 100 commits in the branch comparison. A merge commit

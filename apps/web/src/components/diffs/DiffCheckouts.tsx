@@ -1,65 +1,52 @@
-import type { EnvironmentId, ProjectId, ReviewDiffPreviewInput } from "@t3tools/contracts";
-import { isTestChangedFile } from "@t3tools/shared/changedFileKind";
-import { fileBasename, normalizeProjectPathForComparison } from "@t3tools/shared/path";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import { T, useGT } from "gt-react";
-import { FolderPlusIcon, RefreshCwIcon, XIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import { useState } from "react";
 
-import type { ReviewCheckout } from "~/diffPanelStore";
-import { LIVE_REFRESH_MIN_INTERVAL_MS, useLiveRefresh } from "~/hooks/useLiveRefresh";
 import { useProjects } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
-import { reviewEnvironment } from "~/state/review";
-import { revisionedQuery } from "~/state/revisionedQuery";
 import { vcsEnvironment } from "~/state/vcs";
-import { DiffStatLabel } from "../chat/DiffStatLabel";
 import { Button } from "../ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogHeader,
-  DialogPopup,
-  DialogTitle,
-  DialogTrigger,
-} from "../ui/dialog";
+import { Dialog, DialogHeader, DialogPopup, DialogTitle, DialogTrigger } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
-export function AddDiffCheckout({
-  environmentId,
-  projectId,
-  excludedPaths,
-  onAdd,
-}: {
+export interface ReviewCheckout {
+  readonly cwd: string;
+  readonly projectId: ProjectId;
+  readonly label: string;
+}
+
+interface CheckoutPickerProps {
   environmentId: EnvironmentId;
   projectId: ProjectId;
-  excludedPaths: ReadonlyArray<string>;
-  onAdd: (checkout: ReviewCheckout) => void;
-}) {
+  threadCwd: string | undefined;
+  threadRepositoryRoot: string | undefined;
+  checkout: ReviewCheckout | undefined;
+  onSelect: (checkout: ReviewCheckout | undefined) => void;
+}
+
+export function DiffCheckoutSwitcher(props: CheckoutPickerProps) {
   const gt = useGT();
   const [open, setOpen] = useState(false);
+  const label = props.checkout?.label ?? gt("Thread checkout");
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <DialogTrigger
-              render={<Button size="icon-sm" variant="ghost" aria-label={gt("Add checkout")} />}
-            />
-          }
-        >
-          <FolderPlusIcon className="size-4" />
-        </TooltipTrigger>
-        <TooltipPopup side="top">{gt("Add checkout")}</TooltipPopup>
-      </Tooltip>
+      <DialogTrigger
+        render={<Button size="xs" variant="secondary" />}
+        className="min-w-0 shrink"
+        aria-label={gt("Switch checkout")}
+        title={label}
+      >
+        <span className="max-w-40 truncate">{label}</span>
+        <ChevronDownIcon className="size-3.5 shrink-0 opacity-70" />
+      </DialogTrigger>
       {open && (
         <DiffCheckoutPicker
-          environmentId={environmentId}
-          projectId={projectId}
-          excludedPaths={excludedPaths}
-          onAdd={(checkout) => {
-            onAdd(checkout);
+          {...props}
+          onSelect={(checkout) => {
+            props.onSelect(checkout);
             setOpen(false);
           }}
         />
@@ -71,17 +58,14 @@ export function AddDiffCheckout({
 function DiffCheckoutPicker({
   environmentId,
   projectId,
-  excludedPaths,
-  onAdd,
-}: {
-  environmentId: EnvironmentId;
-  projectId: ProjectId;
-  excludedPaths: ReadonlyArray<string>;
-  onAdd: (checkout: ReviewCheckout) => void;
-}) {
+  threadCwd,
+  threadRepositoryRoot,
+  checkout,
+  onSelect,
+}: CheckoutPickerProps) {
   const gt = useGT();
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
-  const [selectedProjectId, setSelectedProjectId] = useState(projectId);
+  const [selectedProjectId, setSelectedProjectId] = useState(checkout?.projectId ?? projectId);
   const [branchQuery, setBranchQuery] = useState("");
   const [cursor, setCursor] = useState<number | undefined>();
   const project = projects.find(({ id }) => id === selectedProjectId);
@@ -99,7 +83,12 @@ function DiffCheckoutPicker({
         })
       : null,
   );
-  const excluded = new Set(excludedPaths.map(normalizeProjectPathForComparison));
+  const excluded = new Set(
+    [threadCwd, threadRepositoryRoot].flatMap((path) =>
+      path ? [normalizeProjectPathForComparison(path)] : [],
+    ),
+  );
+  const currentPath = checkout ? normalizeProjectPathForComparison(checkout.cwd) : undefined;
   const checkouts = new Map<string, ReviewCheckout>();
   if (project && branchRefs.data?.isRepo) {
     const root = project.repositoryIdentity?.rootPath ?? project.workspaceRoot;
@@ -121,14 +110,15 @@ function DiffCheckoutPicker({
   return (
     <DialogPopup>
       <DialogHeader>
-        <DialogTitle>
-          <T>Add checkout</T>
-        </DialogTitle>
-        <DialogDescription>
-          <T>Choose a project checkout to include in this thread’s live diff.</T>
-        </DialogDescription>
+        <DialogTitle>{gt("Switch checkout")}</DialogTitle>
       </DialogHeader>
       <div className="space-y-2 px-4 pb-4">
+        <CheckoutOption
+          label={gt("Thread checkout")}
+          cwd={threadCwd}
+          selected={!checkout}
+          onSelect={() => onSelect(undefined)}
+        />
         <Select
           items={projects.map(({ id, title }) => ({ value: id, label: title }))}
           value={selectedProjectId}
@@ -165,18 +155,14 @@ function DiffCheckoutPicker({
           }}
         />
         <div className="max-h-72 overflow-y-auto" aria-busy={branchRefs.isPending}>
-          {[...checkouts.values()].map((checkout) => (
-            <button
-              key={checkout.cwd}
-              type="button"
-              className="flex w-full min-w-0 flex-col rounded-md px-2 py-1.5 text-left hover:bg-accent focus-visible:bg-accent"
-              onClick={() => onAdd(checkout)}
-            >
-              <span className="w-full truncate text-sm">{checkout.label}</span>
-              <span className="w-full break-all font-mono text-xs text-muted-foreground">
-                {checkout.cwd}
-              </span>
-            </button>
+          {[...checkouts.entries()].map(([path, option]) => (
+            <CheckoutOption
+              key={path}
+              label={option.label}
+              cwd={option.cwd}
+              selected={path === currentPath}
+              onSelect={() => onSelect(option)}
+            />
           ))}
           {checkouts.size === 0 && (
             <p className="p-2 text-sm text-muted-foreground" role="status">
@@ -206,150 +192,29 @@ function DiffCheckoutPicker({
   );
 }
 
-export function liveCheckoutDiffInput(input: {
-  cwd: string;
-  checkoutProjectId?: ProjectId;
-  baseRef?: string | null;
-  sourceKind: "working-tree" | "branch-range";
-  ignoreWhitespace: boolean;
-}): ReviewDiffPreviewInput {
-  return {
-    cwd: input.cwd,
-    ...(input.checkoutProjectId ? { checkoutProjectId: input.checkoutProjectId } : {}),
-    ...(input.baseRef && input.sourceKind === "branch-range" ? { baseRef: input.baseRef } : {}),
-    sourceKind: input.sourceKind,
-    ignoreWhitespace: input.ignoreWhitespace,
-    metadataOnly: true,
-  };
-}
-
-const FILES_PER_PAGE = 40;
-
-export function DiffCheckoutGroup({
-  environmentId,
+function CheckoutOption({
   label,
-  input,
-  workspaceMutationId,
-  visible,
+  cwd,
   selected,
-  hideTestFiles,
   onSelect,
-  onRemove,
 }: {
-  environmentId: EnvironmentId;
   label: string;
-  input: ReviewDiffPreviewInput;
-  workspaceMutationId: string | null;
-  visible: boolean;
+  cwd: string | undefined;
   selected: boolean;
-  hideTestFiles: boolean;
-  onSelect: (filePath?: string) => void;
-  onRemove?: () => void;
+  onSelect: () => void;
 }) {
-  const gt = useGT();
-  const query = useEnvironmentQuery(
-    visible
-      ? revisionedQuery(
-          reviewEnvironment.diffPreview({ environmentId, input }),
-          workspaceMutationId,
-        )
-      : null,
-  );
-  const source = query.data?.sources.find((candidate) => candidate.kind === input.sourceKind);
-  const files =
-    source?.files?.filter(({ path }) => !hideTestFiles || !isTestChangedFile(path)) ?? [];
-  const [visibleCount, setVisibleCount] = useState(FILES_PER_PAGE);
-  useLiveRefresh(
-    query.data !== null && !query.isPending
-      ? () => {
-          if (Date.now() - query.dataUpdatedAt >= LIVE_REFRESH_MIN_INTERVAL_MS) query.refresh();
-        }
-      : null,
-    {
-      enabled: visible && !selected,
-      key: JSON.stringify(["checkout-diff", environmentId, input.cwd]),
-      intervalMs: null,
-      refreshOnShow: true,
-    },
-  );
-  let emptyText = gt("No Git comparison available.");
-  if (query.isPending) emptyText = gt("Loading changes…");
-  else if (source?.files?.length) emptyText = gt("No visible changes");
-  else if (source?.diff.trim()) emptyText = gt("Select this checkout to see its changes.");
-  else if (source) emptyText = gt("No changes");
   return (
-    <li className="border-b border-border/60 py-1.5 last:border-b-0">
-      <div className="flex items-start gap-1 px-2">
-        <button
-          type="button"
-          aria-pressed={selected}
-          className="min-w-0 flex-1 rounded-md px-1 py-1 text-left hover:bg-accent aria-pressed:bg-accent"
-          onClick={() => onSelect()}
-        >
-          <span className="block truncate text-sm font-medium">
-            {label || fileBasename(input.cwd)}
-          </span>
-          <span className="block break-all font-mono text-2xs text-muted-foreground">
-            {input.cwd}
-          </span>
-          {source?.baseRef && source.kind === "branch-range" && (
-            <span className="block truncate text-2xs text-muted-foreground">
-              {gt("Compared with {base}", { base: source.baseRef })}
-            </span>
-          )}
-        </button>
-        {onRemove && (
-          <Button
-            size="icon-xs"
-            variant="ghost"
-            onClick={onRemove}
-            aria-label={gt("Remove {checkout}", { checkout: label })}
-          >
-            <XIcon className="size-3.5" />
-          </Button>
-        )}
-      </div>
-      {query.error ? (
-        <div className="flex items-center gap-1.5 px-3 py-1" role="status">
-          <span className="text-xs text-muted-foreground">{query.error}</span>
-          <Button
-            size="icon-xs"
-            variant="ghost"
-            onClick={query.refresh}
-            aria-label={gt("Retry checkout diff")}
-          >
-            <RefreshCwIcon className="size-3.5" />
-          </Button>
-        </div>
-      ) : files.length > 0 ? (
-        <ul className="px-2 pt-1">
-          {files.slice(0, visibleCount).map((file) => (
-            <li key={file.path}>
-              <button
-                type="button"
-                className="flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left hover:bg-accent focus-visible:bg-accent"
-                onClick={() => onSelect(file.path)}
-              >
-                <span className="min-w-0 flex-1 truncate font-mono text-xs">{file.path}</span>
-                <DiffStatLabel additions={file.additions} deletions={file.deletions} />
-              </button>
-            </li>
-          ))}
-          {files.length > visibleCount && (
-            <li>
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() => setVisibleCount(visibleCount + FILES_PER_PAGE)}
-              >
-                <T>Show more files</T>
-              </Button>
-            </li>
-          )}
-        </ul>
-      ) : (
-        <p className="px-3 py-1 text-xs text-muted-foreground">{emptyText}</p>
-      )}
-    </li>
+    <button
+      type="button"
+      aria-current={selected ? "true" : undefined}
+      className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent focus-visible:bg-accent"
+      onClick={onSelect}
+    >
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-sm">{label}</span>
+        {cwd && <span className="break-all font-mono text-xs text-muted-foreground">{cwd}</span>}
+      </span>
+      {selected && <CheckIcon aria-hidden className="size-4 shrink-0" />}
+    </button>
   );
 }

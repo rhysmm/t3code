@@ -4,8 +4,13 @@ import {
   checkpointFileTotals,
   type ThreadCheckpointSummary,
 } from "@t3tools/client-runtime/state/thread-checkpoints";
-import type { ReviewDiffPreviewInput, ReviewDiffPreviewSource } from "@t3tools/contracts";
+import type {
+  ProjectId,
+  ReviewDiffPreviewInput,
+  ReviewDiffPreviewSource,
+} from "@t3tools/contracts";
 import { quoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
+import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Order from "effect/Order";
@@ -13,10 +18,14 @@ import * as Order from "effect/Order";
 export type LiveReviewSectionKind = "working-tree" | "branch-range";
 export type ReviewSectionKind = "turn" | LiveReviewSectionKind;
 
-export const CHANGES_SECTION_ID = "git:branch-range";
-const WORKING_TREE_SECTION_ID = "git:working-tree";
 const CHANGES_TITLE = "Changes";
 const UNCOMMITTED_SUBTITLE = "Staged, unstaged, and untracked files";
+
+export interface ReviewCheckout {
+  readonly cwd: string;
+  readonly projectId: ProjectId;
+  readonly label: string;
+}
 
 export interface ReviewSectionItem {
   readonly id: string;
@@ -527,7 +536,7 @@ export function buildReviewSectionItems(input: {
   readonly gitSections: ReadonlyArray<ReviewDiffPreviewSource>;
   readonly turnDiffById: Readonly<Record<string, string | undefined>>;
   readonly loadingGitSections: boolean;
-  readonly hasAdditionalCheckouts?: boolean;
+  readonly checkoutPreview?: ReviewDiffPreviewInput;
 }): ReadonlyArray<ReviewSectionItem> {
   const turnItems = getReadyReviewCheckpoints(input.checkpoints).map<ReviewSectionItem>(
     (checkpoint) => {
@@ -548,11 +557,14 @@ export function buildReviewSectionItems(input: {
       (section): section is typeof section & { kind: LiveReviewSectionKind } =>
         section.kind !== "commit",
     )
-    .map(buildReviewGitSectionItem);
-  const hasChangesItem = gitItems.some((item) => item.id === CHANGES_SECTION_ID);
-  if ((input.loadingGitSections || input.hasAdditionalCheckouts) && !hasChangesItem) {
+    .map((section) => buildReviewGitSectionItem(section, input.checkoutPreview));
+  const changesId = getReviewGitSectionId("branch-range", input.checkoutPreview?.cwd);
+  if (
+    (input.loadingGitSections || input.checkoutPreview) &&
+    !gitItems.some((item) => item.id === changesId)
+  ) {
     gitItems.unshift({
-      id: CHANGES_SECTION_ID,
+      id: changesId,
       kind: "branch-range",
       title: CHANGES_TITLE,
       subtitle: null,
@@ -560,33 +572,41 @@ export function buildReviewSectionItems(input: {
       isLoading: input.loadingGitSections,
     });
   }
-  if (
-    input.hasAdditionalCheckouts &&
-    !gitItems.some((item) => item.id === WORKING_TREE_SECTION_ID)
-  ) {
-    gitItems.push({
-      id: WORKING_TREE_SECTION_ID,
-      kind: "working-tree",
-      title: "Uncommitted",
-      subtitle: null,
-      diff: null,
-      isLoading: input.loadingGitSections,
-    });
+  if (input.checkoutPreview) {
+    const workingTreeId = getReviewGitSectionId("working-tree", input.checkoutPreview.cwd);
+    if (!gitItems.some((item) => item.id === workingTreeId)) {
+      gitItems.push({
+        id: workingTreeId,
+        kind: "working-tree",
+        title: "Uncommitted",
+        subtitle: null,
+        diff: null,
+        isLoading: input.loadingGitSections,
+      });
+    }
   }
 
   return [...turnItems, ...gitItems];
 }
 
-export function buildReviewGitSectionItem(
+export function getReviewGitSectionId(kind: LiveReviewSectionKind, checkoutCwd?: string): string {
+  return checkoutCwd
+    ? JSON.stringify([normalizeProjectPathForComparison(checkoutCwd), kind])
+    : `git:${kind}`;
+}
+
+function buildReviewGitSectionItem(
   section: ReviewDiffPreviewSource & { kind: LiveReviewSectionKind },
+  previewInput?: ReviewDiffPreviewInput,
 ): ReviewSectionItem {
   return {
-    id: `git:${section.kind}`,
+    id: getReviewGitSectionId(section.kind, previewInput?.cwd),
     kind: section.kind,
     title: section.title,
     subtitle: gitSubtitle(section),
     diff: section.diff,
     source: section,
+    ...(previewInput ? { previewInput } : {}),
     ...(section.files ? { files: section.files } : {}),
     truncated: section.truncated,
     isLoading: false,
@@ -596,7 +616,7 @@ export function buildReviewGitSectionItem(
 export function getDefaultReviewSectionId(
   sections: ReadonlyArray<ReviewSectionItem>,
 ): string | null {
-  return (sections.find((section) => section.id === CHANGES_SECTION_ID) ?? sections[0])?.id ?? null;
+  return (sections.find((section) => section.kind === "branch-range") ?? sections[0])?.id ?? null;
 }
 
 /**

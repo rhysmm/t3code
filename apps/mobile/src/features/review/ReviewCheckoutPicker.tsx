@@ -8,21 +8,22 @@ import { FormField } from "../../components/ui/FormSection";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Sheet } from "../../components/ui/Sheet";
 import { useProjects } from "../../state/entities";
 import { useDebouncedValue, usePaginatedBranches } from "../../state/queries";
-import type { ReviewCheckout } from "./reviewCheckouts";
+import type { ReviewCheckout } from "./reviewModel";
 
 export function ReviewCheckoutPicker(props: {
   readonly environmentId: EnvironmentId;
+  readonly threadCwd: string | null;
+  readonly threadProjectId: ProjectId | null;
   readonly threadCheckoutPaths: ReadonlyArray<string>;
-  readonly checkouts: ReadonlyArray<ReviewCheckout>;
-  readonly onToggleCheckout: (checkout: ReviewCheckout) => void;
+  readonly checkout: ReviewCheckout | null;
+  readonly onSelectCheckout: (checkout: ReviewCheckout | null) => void;
   readonly onClose: () => void;
 }) {
   const gt = useGT();
-  const [projectId, setProjectId] = useState<ProjectId | null>(null);
+  const [projectId, setProjectId] = useState(props.checkout?.projectId ?? props.threadProjectId);
   const [branchSearch, setBranchSearch] = useState("");
   const projects = useProjects().filter((entry) => entry.environmentId === props.environmentId);
   const project = projects.find((entry) => entry.id === projectId);
@@ -38,7 +39,7 @@ export function ReviewCheckoutPicker(props: {
     for (const ref of branches.refs) {
       if (ref.isRemote || ref.worktreePath === null) continue;
       const key = normalizeProjectPathForComparison(ref.worktreePath);
-      if (key === projectPath) continue;
+      if (key === projectPath || props.threadCheckoutPaths.includes(key)) continue;
       worktrees.set(key, {
         cwd: ref.worktreePath,
         projectId: project.id,
@@ -46,33 +47,35 @@ export function ReviewCheckoutPicker(props: {
       });
     }
   }
-  const included = new Set(
-    props.checkouts.map((checkout) => normalizeProjectPathForComparison(checkout.cwd)),
-  );
-  const checkoutRow = (checkout: ReviewCheckout, allowRemovingThreadCheckout = false) => {
+  const selectedPath = props.checkout
+    ? normalizeProjectPathForComparison(props.checkout.cwd)
+    : null;
+  const checkoutRow = (checkout: ReviewCheckout, index = 0) => {
     const key = normalizeProjectPathForComparison(checkout.cwd);
-    const isThreadCheckout = props.threadCheckoutPaths.includes(key);
     return (
-      <ListToggleRow
+      <ListChoiceRow
         key={key}
         label={checkout.label}
         description={checkout.cwd}
-        value={included.has(key) || isThreadCheckout}
-        disabled={isThreadCheckout && !allowRemovingThreadCheckout}
-        onValueChange={() => props.onToggleCheckout(checkout)}
+        selected={key === selectedPath}
+        separated={index > 0}
+        onPress={() => props.onSelectCheckout(checkout)}
       />
     );
   };
 
   return (
-    <Sheet title={gt("Review checkouts")} onClose={props.onClose}>
+    <Sheet title={gt("Switch checkout")} onClose={props.onClose}>
       <ScrollView contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled">
         <View className="gap-4 p-4">
-          {props.checkouts.length > 0 ? (
-            <ListSection title={gt("Included checkouts")}>
-              {props.checkouts.map((checkout) => checkoutRow(checkout, true))}
-            </ListSection>
-          ) : null}
+          <ListSection>
+            <ListChoiceRow
+              label={gt("Thread checkout")}
+              description={props.threadCwd ?? undefined}
+              selected={props.checkout === null}
+              onPress={() => props.onSelectCheckout(null)}
+            />
+          </ListSection>
           <ListSection title={gt("Projects")}>
             {projects.map((entry, index) => (
               <ListChoiceRow
@@ -90,7 +93,11 @@ export function ReviewCheckoutPicker(props: {
           </ListSection>
           {project ? (
             <>
-              {branches.data?.isRepo && projectCheckout !== null ? (
+              {branches.data?.isRepo &&
+              projectCheckout !== null &&
+              !props.threadCheckoutPaths.includes(
+                normalizeProjectPathForComparison(projectCheckout),
+              ) ? (
                 <ListSection title={gt("Project checkout")}>
                   {checkoutRow({
                     cwd: projectCheckout,
@@ -116,7 +123,7 @@ export function ReviewCheckoutPicker(props: {
                       : undefined)
                 }
               >
-                {Array.from(worktrees.values(), (checkout) => checkoutRow(checkout))}
+                {Array.from(worktrees.values(), checkoutRow)}
                 {branches.data?.nextCursor != null ? (
                   <ListActionRow
                     label={gt("Load more")}

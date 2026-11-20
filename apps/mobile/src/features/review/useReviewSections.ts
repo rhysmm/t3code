@@ -3,7 +3,12 @@ import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/files
 import { Atom } from "effect/reactivity";
 
 import { deriveThreadCheckpointSummaries } from "@t3tools/client-runtime/state/thread-checkpoints";
-import type { EnvironmentId, ReviewDiffPreviewSource, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ReviewDiffPreviewInput,
+  ReviewDiffPreviewSource,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import { useCheckpointDiff } from "../../state/queries";
 import { useEnvironmentQuery } from "../../state/query";
@@ -16,9 +21,12 @@ import { useSelectedThreadWorktree } from "../../state/use-selected-thread-workt
 import {
   buildReviewSectionItems,
   getReadyReviewCheckpoints,
+  getReviewGitSectionId,
   getReviewSectionIdForCheckpoint,
   resolveReviewSelectedSectionId,
   reviewTurnDiffsBySectionId,
+  type LiveReviewSectionKind,
+  type ReviewCheckout,
   type ReviewSectionItem,
 } from "./reviewModel";
 import { setReviewSelectedSectionId, type ReviewCacheForThread } from "./reviewState";
@@ -37,9 +45,13 @@ export function useReviewSections(input: {
   readonly environmentId?: EnvironmentId;
   readonly threadId?: ThreadId;
   readonly reviewCache: ReviewCacheForThread;
-  readonly hasAdditionalCheckouts?: boolean;
+  readonly alternate: {
+    readonly checkout: ReviewCheckout;
+    readonly kind: LiveReviewSectionKind;
+    readonly metadataOnly: boolean;
+  } | null;
 }) {
-  const { environmentId, reviewCache, threadId } = input;
+  const { alternate, environmentId, reviewCache, threadId } = input;
   const enabled = input.enabled ?? true;
   const fileAccessSession = useEnvironmentQuery(
     environmentId === undefined ? null : environmentSession.sessionStateAtom(environmentId),
@@ -54,16 +66,26 @@ export function useReviewSections(input: {
   const { canReadFiles } = fileAccess;
   const selectedThread = useSelectedThreadProjection();
   const { selectedThreadCwd } = useSelectedThreadWorktree();
+  const checkoutPreview: ReviewDiffPreviewInput | undefined = alternate
+    ? {
+        cwd: alternate.checkout.cwd,
+        checkoutProjectId: alternate.checkout.projectId,
+        sourceKind: alternate.kind,
+        metadataOnly: alternate.metadataOnly,
+      }
+    : undefined;
+  const gitPreviewInput =
+    checkoutPreview ?? (selectedThreadCwd ? { cwd: selectedThreadCwd } : null);
   const diffPreview = useEnvironmentQuery(
-    canReadFiles && enabled && environmentId !== undefined && selectedThreadCwd !== null
+    canReadFiles && enabled && environmentId !== undefined && gitPreviewInput
       ? reviewEnvironment.diffPreview({
           environmentId,
-          input: { cwd: selectedThreadCwd },
+          input: gitPreviewInput,
         })
       : null,
   );
   const lastGitSections = useAtomValue(
-    environmentId !== undefined && selectedThreadCwd !== null
+    !alternate && environmentId !== undefined && selectedThreadCwd !== null
       ? lastReviewGitSectionsAtom(environmentId, selectedThreadCwd)
       : NO_GIT_SECTIONS_ATOM,
   );
@@ -88,18 +110,15 @@ export function useReviewSections(input: {
       canReadFiles || fileAccess.isPending ? (diffPreview.data?.sources ?? lastGitSections) : [],
     turnDiffById: reviewTurnDiffsBySectionId(readyCheckpoints, lastTurnDiffs),
     loadingGitSections: fileAccess.isPending || diffPreview.isPending,
-    hasAdditionalCheckouts: Boolean(
-      input.hasAdditionalCheckouts && (canReadFiles || fileAccess.isPending),
-    ),
+    ...(checkoutPreview && (canReadFiles || fileAccess.isPending) ? { checkoutPreview } : {}),
   });
-  const selectedSectionId = resolveReviewSelectedSectionId(
-    cachedSections,
-    reviewCache.selectedSectionId,
-  );
+  const selectedSectionId = alternate
+    ? getReviewGitSectionId(alternate.kind, alternate.checkout.cwd)
+    : resolveReviewSelectedSectionId(cachedSections, reviewCache.selectedSectionId);
 
   const selectedCheckpoint =
     selectedSectionId === null ? undefined : checkpointBySectionId.get(selectedSectionId);
-  const activeCheckpoint = selectedCheckpoint ?? readyCheckpoints[0] ?? null;
+  const activeCheckpoint = alternate ? null : (selectedCheckpoint ?? readyCheckpoints[0] ?? null);
   const activeSectionId = activeCheckpoint
     ? getReviewSectionIdForCheckpoint(activeCheckpoint)
     : null;
@@ -147,10 +166,9 @@ export function useReviewSections(input: {
 
   return {
     canReadFiles,
-    gitError: diffPreview.error,
     error:
       diffPreview.error ??
-      activeTurnDiff.error ??
+      (alternate ? null : activeTurnDiff.error) ??
       (selectedSection === null && !fileAccess.isPending && !canReadFiles
         ? (fileAccess.error ?? "This connection cannot read local diffs.")
         : null),

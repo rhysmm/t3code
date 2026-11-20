@@ -29,10 +29,14 @@ type ResultAtom<A> = Atom.Atom<AsyncResult.AsyncResult<A, Error>>;
 const state = vi.hoisted(() => ({
   thread: null as ReturnType<typeof makeThreadFixture> | null,
   threadRef: null as ScopedThreadRef | null,
+  checkoutPreviews: new Map<string, ResultAtom<ReviewDiffPreviewResult>>(),
   previews: new Map<string | null, ResultAtom<ReviewDiffPreviewResult>>(),
   patch: null as unknown as ResultAtom<ReviewDiffPreviewSource>,
   diffFilesCollapsed: false,
   project: {
+    id: "project",
+    environmentId: "environment",
+    title: "Project",
     workspaceRoot: "/project",
     repositoryIdentity: null as { rootPath: string } | null,
   },
@@ -51,8 +55,8 @@ vi.mock("~/state/server", () => ({
 }));
 vi.mock("~/state/review", () => ({
   reviewEnvironment: {
-    diffPreview: ({ input }: { input: { baseRef?: string } }) =>
-      state.previews.get(input.baseRef ?? null)!,
+    diffPreview: ({ input }: { input: { cwd: string; baseRef?: string } }) =>
+      state.checkoutPreviews.get(input.cwd) ?? state.previews.get(input.baseRef ?? null)!,
     branchCommits: () => state.commits,
     diffFilePatch: () => state.patch,
     diffFileContents: {},
@@ -142,7 +146,13 @@ function setup(failedBaseRef: string | null) {
   };
   reset();
   state.diffFilesCollapsed = false;
-  state.project = { workspaceRoot: "/project", repositoryIdentity: null };
+  state.project = {
+    id: "project",
+    environmentId: "environment",
+    title: "Project",
+    workspaceRoot: "/project",
+    repositoryIdentity: null,
+  };
   state.toolCallItem = null;
   state.checkpoints = [];
   state.checkpointDiff = null;
@@ -161,6 +171,7 @@ function setup(failedBaseRef: string | null) {
     branch: "dev",
     worktreePath: cwd,
   });
+  state.checkoutPreviews.clear();
   state.previews.clear();
   state.previews.set(null, Atom.make(AsyncResult.success(preview())));
   state.previews.set("main", Atom.make(AsyncResult.success(preview())));
@@ -209,6 +220,60 @@ function setup(failedBaseRef: string | null) {
     },
   };
 }
+
+it("switches to one worktree's files and back to the thread checkout", async () => {
+  using context = setup("origin/orphan");
+  const alternateCwd = "/review-worktree";
+  function checkoutPreview(checkoutCwd: string, path: string): ResultAtom<ReviewDiffPreviewResult> {
+    const metadata = preview();
+    return Atom.make(
+      AsyncResult.success({
+        ...metadata,
+        cwd: checkoutCwd,
+        sources: [
+          {
+            ...metadata.sources[0]!,
+            files: [{ path, previousPath: null, additions: 1, deletions: 1 }],
+          },
+        ],
+      }),
+    );
+  }
+  state.checkoutPreviews.set(cwd, checkoutPreview(cwd, "thread.txt"));
+  state.checkoutPreviews.set(alternateCwd, checkoutPreview(alternateCwd, "alternate.txt"));
+  const refs = AsyncResult.getOrThrow(context.registry.get(state.localRefs));
+  state.localRefs = Atom.make(
+    AsyncResult.success({
+      ...refs,
+      refs: refs.refs.map((ref) =>
+        ref.name === "dev" ? { ...ref, name: "alternate", worktreePath: alternateCwd } : ref,
+      ),
+    }),
+  );
+
+  await using screen = await render(
+    <RegistryContext.Provider value={context.registry}>
+      <div className="flex h-[600px] flex-col">
+        <DiffPanel composerDraftTarget={context.threadRef} workspaceMutationId={null} visible />
+      </div>
+    </RegistryContext.Provider>,
+  );
+  const switcher = screen.getByRole("button", { name: "Switch checkout", exact: true });
+  const threadFile = screen.getByRole("button", { name: "Expand thread.txt", exact: true });
+  const alternateFile = screen.getByRole("button", { name: "Expand alternate.txt", exact: true });
+
+  await expect.element(threadFile).toBeVisible();
+  await userEvent.click(switcher);
+  await userEvent.click(screen.getByRole("button", { name: /Project · alternate/ }));
+  await expect.element(alternateFile).toBeVisible();
+  await expect.element(threadFile).not.toBeInTheDocument();
+  await expect.element(switcher).toHaveTextContent("Project · alternate");
+
+  await userEvent.click(switcher);
+  await userEvent.click(screen.getByRole("button", { name: /Thread checkout \/project-worktree/ }));
+  await expect.element(threadFile).toBeVisible();
+  await expect.element(alternateFile).not.toBeInTheDocument();
+});
 
 it.each([
   {
@@ -386,7 +451,11 @@ it("opens a file from a tool call's diff by the path its agent recorded", async 
   using context = setup("origin/orphan");
   // A local thread in a project that is the repository's apps/web folder.
   state.thread = { ...state.thread!, worktreePath: null };
-  state.project = { workspaceRoot: "/repo/apps/web", repositoryIdentity: { rootPath: "/repo" } };
+  state.project = {
+    ...state.project,
+    workspaceRoot: "/repo/apps/web",
+    repositoryIdentity: { rootPath: "/repo" },
+  };
   const status = AsyncResult.getOrThrow(context.registry.get(state.status));
   state.status = Atom.make(
     AsyncResult.success({ ...status, workingTree: { ...status.workingTree, rootPath: "/repo" } }),

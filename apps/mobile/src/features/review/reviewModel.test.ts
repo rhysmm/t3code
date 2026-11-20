@@ -4,6 +4,7 @@ import {
   applyReviewDiffMetadata,
   buildReviewParsedDiff,
   buildReviewSectionItems,
+  getReviewGitSectionId,
   resolveReviewSelectedSectionId,
   type ReviewSectionItem,
 } from "./reviewModel";
@@ -32,17 +33,22 @@ describe("resolveReviewSelectedSectionId", () => {
     expect(resolveReviewSelectedSectionId([turn, changes], "turn:2")).toBe("turn:2");
   });
 
-  it("opens either live scope when only an additional checkout has a diff", () => {
+  it("keeps live scopes selectable while the alternate checkout loads", () => {
+    const cwd = "/repo/worktree";
     const sections = buildReviewSectionItems({
       checkpoints: [],
       gitSections: [],
       turnDiffById: {},
-      loadingGitSections: false,
-      hasAdditionalCheckouts: true,
+      loadingGitSections: true,
+      checkoutPreview: { cwd },
     });
 
-    expect(resolveReviewSelectedSectionId(sections, null)).toBe("git:branch-range");
-    expect(resolveReviewSelectedSectionId(sections, "git:working-tree")).toBe("git:working-tree");
+    const workingTreeId = getReviewGitSectionId("working-tree", cwd);
+    expect(resolveReviewSelectedSectionId(sections, null)).toBe(
+      getReviewGitSectionId("branch-range", cwd),
+    );
+    expect(resolveReviewSelectedSectionId(sections, workingTreeId)).toBe(workingTreeId);
+    expect(workingTreeId).not.toBe(getReviewGitSectionId("working-tree", "/repo"));
   });
 });
 

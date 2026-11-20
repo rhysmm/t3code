@@ -7,7 +7,11 @@ import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { AppBar } from "../../components/ui/AppBar";
 import type { AppBarMenuItem } from "../../components/ui/AppBar.types";
-import { CHANGES_SECTION_ID, type ReviewSectionItem } from "./reviewModel";
+import {
+  type LiveReviewSectionKind,
+  type ReviewCheckout,
+  type ReviewSectionItem,
+} from "./reviewModel";
 import { useReviewHeaderPresentation } from "./useReviewHeaderPresentation";
 import { useGT } from "gt-react-native";
 import { type Ref, type ReactElement, useImperativeHandle, useMemo, useRef, useState } from "react";
@@ -60,13 +64,7 @@ import { buildReviewSectionMenu } from "./review-section-menu";
 import { reportShowcaseSceneRendered } from "../showcase/showcaseRenderSignal";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { scopedThreadKey } from "../../lib/scopedEntities";
-import { ReviewCheckoutOverview } from "./ReviewCheckoutOverview";
 import { ReviewCheckoutPicker } from "./ReviewCheckoutPicker";
-import {
-  useReviewCheckoutDiffs,
-  useReviewCheckoutSelection,
-  type ReviewCheckoutGroup,
-} from "./reviewCheckouts";
 
 function ReviewHeader(
   props: Parameters<typeof useReviewHeaderPresentation>[0] & {
@@ -75,8 +73,7 @@ function ReviewHeader(
     readonly showChangedFilesToggle: boolean;
     readonly onSelectSection: (sectionId: string) => void;
     readonly onReturnToThread: () => void;
-    readonly onEditCheckouts: (() => void) | null;
-    readonly onReturnToCheckouts: (() => void) | null;
+    readonly onSwitchCheckout: (() => void) | null;
     readonly showThreadGitMenu: boolean;
   },
 ) {
@@ -97,10 +94,10 @@ function ReviewHeader(
     <AppBar
       title={presentation.title}
       subtitle={presentation.subtitle}
-      onBack={props.onReturnToCheckouts ?? props.onReturnToThread}
+      onBack={props.onReturnToThread}
       hideBottomBorder
       backInSplitView={{
-        accessibilityLabel: props.onReturnToCheckouts ? gt("All checkouts") : "Back to chat",
+        accessibilityLabel: "Back to chat",
         icon: "chevron.left",
       }}
       actions={
@@ -149,21 +146,12 @@ function ReviewHeader(
                         },
                       ]
                     : []),
-                  ...(props.onReturnToCheckouts
+                  ...(props.onSwitchCheckout
                     ? [
                         {
-                          id: "all-checkouts",
-                          title: gt("All checkouts"),
-                          onPress: props.onReturnToCheckouts,
-                        },
-                      ]
-                    : []),
-                  ...(props.onEditCheckouts
-                    ? [
-                        {
-                          id: "edit-checkouts",
-                          title: gt("Review checkouts"),
-                          onPress: props.onEditCheckouts,
+                          id: "switch-checkout",
+                          title: gt("Switch checkout"),
+                          onPress: props.onSwitchCheckout,
                         },
                       ]
                     : []),
@@ -377,6 +365,11 @@ type ReviewSheetProps = StaticScreenProps<{
 }>;
 
 export function ReviewSheet(props: ReviewSheetProps) {
+  const { environmentId, threadId } = props.route.params;
+  return <ReviewSheetContent key={scopedThreadKey(environmentId, threadId)} {...props} />;
+}
+
+function ReviewSheetContent(props: ReviewSheetProps) {
   const reduceMotion = useReduceMotionEnabled();
   const { nativeReviewDiffStyle } = useAppearanceCodeSurface();
   const { panes } = useWorkspacePaneState();
@@ -390,13 +383,10 @@ export function ReviewSheet(props: ReviewSheetProps) {
   const isEnvironmentReady = environment.presentation?.connection.phase === "connected";
   const { draftMessage, draftContext } = useThreadDraftForThread({ environmentId, threadId });
   const reviewCache = useReviewCacheForThread({ environmentId, threadId });
-  const threadKey = scopedThreadKey(environmentId, threadId);
-  const { checkouts, toggleCheckout } = useReviewCheckoutSelection(threadKey);
   const [showCheckoutPicker, setShowCheckoutPicker] = useState(false);
-  const [checkoutDetail, setCheckoutDetail] = useState<{
-    readonly threadKey: string;
-    readonly sectionId: string;
-    readonly cwd: string;
+  const [alternate, setAlternate] = useState<{
+    readonly checkout: ReviewCheckout;
+    readonly kind: LiveReviewSectionKind;
   } | null>(null);
   const { selectedThreadProject } = useThreadSelection();
   const { selectedThreadCwd, selectedThreadWorktreePath } = useSelectedThreadWorktree();
@@ -409,70 +399,26 @@ export function ReviewSheet(props: ReviewSheetProps) {
       ),
     [selectedThreadCwd, primaryRepositoryRoot],
   );
-  const additionalCheckouts = useMemo(
-    () =>
-      checkouts.filter(
-        ({ cwd }) => !threadCheckoutPaths.includes(normalizeProjectPathForComparison(cwd)),
-      ),
-    [checkouts, threadCheckoutPaths],
-  );
   const topContentInset = useContentTopInset();
   const bottomContentInset = useSheetContentBottomInset();
 
+  // Expo may return null before registration or in older binaries; use the fallback.
+  const NativeReviewDiffView = resolveNativeReviewDiffView();
   const {
-    error,
+    error: activeError,
     reviewSections,
-    selectedSection: selectedThreadSection,
+    selectedSection,
     refreshSelectedSection,
     selectSection,
-    isSelectedSectionPending,
+    isSelectedSectionPending: activeDiffPending,
     canReadFiles,
-    gitError,
   } = useReviewSections({
     enabled: isEnvironmentReady,
     environmentId,
     threadId,
     reviewCache,
-    hasAdditionalCheckouts: additionalCheckouts.length > 0,
+    alternate: alternate ? { ...alternate, metadataOnly: NativeReviewDiffView !== null } : null,
   });
-  const isCombinedGitReview =
-    canReadFiles &&
-    additionalCheckouts.length > 0 &&
-    selectedThreadSection !== null &&
-    selectedThreadSection.kind !== "turn";
-  // Expo may return null before registration or in older binaries; use the fallback.
-  const NativeReviewDiffView = resolveNativeReviewDiffView();
-  const detailCwd =
-    checkoutDetail?.threadKey === threadKey &&
-    checkoutDetail.sectionId === selectedThreadSection?.id
-      ? checkoutDetail.cwd
-      : null;
-  const checkoutDiffs = useReviewCheckoutDiffs({
-    environmentId,
-    checkouts: additionalCheckouts,
-    kind: isCombinedGitReview && isEnvironmentReady ? selectedThreadSection.kind : null,
-    fullPatchCwd: NativeReviewDiffView === null ? detailCwd : null,
-  });
-  const checkoutGroups: ReviewCheckoutGroup[] = [];
-  if (isCombinedGitReview && selectedThreadCwd !== null) {
-    checkoutGroups.push({
-      cwd: selectedThreadCwd,
-      title: selectedThreadProject?.title ?? selectedThreadCwd,
-      section: selectedThreadSection,
-      error: gitError,
-      isPending: isSelectedSectionPending,
-    });
-  }
-  checkoutGroups.push(...checkoutDiffs.groups);
-  const activeCheckout = checkoutGroups.find((group) => group.cwd === detailCwd);
-  const showCheckoutOverview = isCombinedGitReview && activeCheckout === undefined;
-  const selectedSection = isCombinedGitReview
-    ? (activeCheckout?.section ?? null)
-    : selectedThreadSection;
-  const activeDiffPending = isCombinedGitReview
-    ? (activeCheckout?.isPending ?? checkoutGroups.some((group) => group.isPending))
-    : isSelectedSectionPending;
-  const activeError = isCombinedGitReview ? (activeCheckout?.error ?? null) : error;
   useReviewDiffPrewarming({
     threadKey: reviewCache.threadKey,
     sections: reviewSections,
@@ -498,7 +444,6 @@ export function ReviewSheet(props: ReviewSheetProps) {
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const handlePullToRefresh = async () => {
     setIsPullRefreshing(true);
-    checkoutDiffs.refreshCheckouts();
     await settlePromise(refreshSelectedSection);
     setIsPullRefreshing(false);
   };
@@ -623,6 +568,7 @@ export function ReviewSheet(props: ReviewSheetProps) {
     void retryEnvironment(environmentId);
   };
   const handleReturnToThread = () => {
+    setAlternate(null);
     if (navigation.canGoBack()) {
       navigation.goBack();
       return;
@@ -633,7 +579,8 @@ export function ReviewSheet(props: ReviewSheetProps) {
     });
   };
   const androidHeaderSubtitle = [
-    activeCheckout?.title ?? selectedThreadSection?.title,
+    alternate?.checkout.label,
+    selectedSection?.title,
     headerDiffSummary.additions,
     headerDiffSummary.deletions,
   ]
@@ -670,6 +617,7 @@ export function ReviewSheet(props: ReviewSheetProps) {
     return <>{children}</>;
   })();
   const headerSubtitle = [
+    alternate ? selectedSection?.title : null,
     headerDiffSummary.additions,
     headerDiffSummary.deletions,
     pendingReviewCommentCount > 0
@@ -678,7 +626,7 @@ export function ReviewSheet(props: ReviewSheetProps) {
   ]
     .filter(Boolean)
     .join(" · ");
-  const headerTitleText = activeCheckout?.title ?? selectedThreadSection?.title ?? "Review changes";
+  const headerTitleText = alternate?.checkout.label ?? selectedSection?.title ?? "Review changes";
 
   return (
     <>
@@ -694,34 +642,45 @@ export function ReviewSheet(props: ReviewSheetProps) {
         title={headerTitleText}
         subtitle={headerSubtitle}
         androidSubtitle={androidHeaderSubtitle}
-        selectedThreadCwd={selectedThreadCwd}
+        selectedThreadCwd={alternate ? null : selectedThreadCwd}
         sectionMenu={sectionMenu}
-        selectedSection={selectedThreadSection}
+        selectedSection={selectedSection}
         showSectionToolbar={showSectionToolbar}
         showChangedFilesToggle={showChangedFilesToggle}
         onRefresh={handlePullToRefresh}
         onSelectSection={(sectionId) => {
-          setCheckoutDetail(null);
+          const section = reviewSections.find(({ id }) => id === sectionId);
+          if (alternate && section && section.kind !== "turn") {
+            setAlternate({ ...alternate, kind: section.kind });
+            return;
+          }
+          setAlternate(null);
           selectSection(sectionId);
         }}
         onReturnToThread={handleReturnToThread}
-        onEditCheckouts={
+        onSwitchCheckout={
           canReadFiles && isEnvironmentReady ? () => setShowCheckoutPicker(true) : null
         }
-        onReturnToCheckouts={activeCheckout ? () => setCheckoutDetail(null) : null}
-        showThreadGitMenu={!isCombinedGitReview || activeCheckout?.cwd === selectedThreadCwd}
+        showThreadGitMenu={alternate === null}
       />
       {showCheckoutPicker && canReadFiles ? (
         <ReviewCheckoutPicker
           environmentId={environmentId}
+          threadCwd={selectedThreadCwd}
+          threadProjectId={selectedThreadProject?.id ?? null}
           threadCheckoutPaths={threadCheckoutPaths}
-          checkouts={checkouts}
-          onToggleCheckout={(checkout) => {
-            toggleCheckout(checkout);
-            setCheckoutDetail(null);
-            if (!selectedThreadSection || selectedThreadSection.kind === "turn") {
-              selectSection(CHANGES_SECTION_ID);
-            }
+          checkout={alternate?.checkout ?? null}
+          onSelectCheckout={(checkout) => {
+            setAlternate(
+              checkout
+                ? {
+                    checkout,
+                    kind:
+                      selectedSection?.kind === "working-tree" ? "working-tree" : "branch-range",
+                  }
+                : null,
+            );
+            setShowCheckoutPicker(false);
           }}
           onClose={() => setShowCheckoutPicker(false)}
         />
@@ -744,24 +703,6 @@ export function ReviewSheet(props: ReviewSheetProps) {
                 onRetry={handleRetryEnvironment}
               />
             </View>
-          ) : showCheckoutOverview ? (
-            <ReviewCheckoutOverview
-              key={`${threadKey}:${selectedThreadSection?.id}`}
-              groups={checkoutGroups}
-              refreshing={isRefreshing}
-              refresh={() => void handlePullToRefresh()}
-              open={(group) => {
-                if (selectedThreadSection) {
-                  setCheckoutDetail({
-                    threadKey,
-                    sectionId: selectedThreadSection.id,
-                    cwd: group.cwd,
-                  });
-                }
-              }}
-              topInset={topContentInset}
-              bottomInset={bottomContentInset}
-            />
           ) : selectedSection && parsedDiff.kind === "files" && NativeReviewDiffView ? (
             <View
               className="flex-1"
