@@ -8,7 +8,7 @@ import {
   type PullRequestDiffResult,
 } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
 import { __setClientSettingsForTests } from "../../hooks/useSettings";
@@ -26,7 +26,7 @@ const { diffAtom, pagedDiffAtom } = await vi.hoisted(async () => {
       "-before()",
       "+after()",
       " one()",
-      " two()",
+      ...(path === "late.test.ts" ? ["-two()", "+  two()"] : [" two()"]),
       " three()",
       " four()",
       " five()",
@@ -59,6 +59,7 @@ const { diffAtom, pagedDiffAtom } = await vi.hoisted(async () => {
 
 const mocks = vi.hoisted(() => ({
   paged: false,
+  viewKey: "",
   diffCommits: [] as Array<string | undefined>,
   viewedPaths: null as ReadonlySet<string> | null,
   viewedListeners: new Set<() => void>(),
@@ -172,6 +173,7 @@ function setup({ paged }: { paged: boolean }) {
   window.localStorage.removeItem("t3code.diffHideTestFiles");
   __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
   mocks.paged = paged;
+  mocks.viewKey = expect.getState().currentTestName ?? "";
   mocks.diffCommits = [];
   mocks.viewedPaths = null;
   mocks.viewedListeners.clear();
@@ -182,12 +184,15 @@ const tab = (
   revealRequest: { readonly path: string; readonly nonce: number } | null = null,
   revealUrl?: string,
   onRevealSettled?: (url: string) => void,
+  view = detail,
+  viewKey = mocks.viewKey,
 ) => (
   <PullRequestCodeTab
     scrollerRef={() => {}}
+    viewKey={viewKey}
     environmentId={EnvironmentId.make("environment")}
-    reference={detail}
-    detail={detail}
+    reference={view}
+    detail={view}
     selectedCommitOid={null}
     onSelectedCommitChange={() => {}}
     onRefresh={() => {}}
@@ -255,8 +260,8 @@ it("restores saved Viewed folds, follows cleared marks, and allows explicit expa
   await screen.rerender(<div />);
   await screen.rerender(tab(1));
   await expect
-    .element(screen.getByRole("button", { name: "Expand diff", exact: true }))
-    .toHaveAttribute("aria-expanded", "false");
+    .element(screen.getByRole("button", { name: "Collapse diff", exact: true }))
+    .toHaveAttribute("aria-expanded", "true");
 });
 
 // regression: #13279 a Viewed answer that lands after a link reveals a file must not fold it
@@ -310,6 +315,105 @@ it("scrolls to a file asked for as the tab opens", async () => {
   await using screen = await render(tab(0, { path: "early-39.ts", nonce: 1 }), { container });
 
   await expectFileHeaderShown(screen, container, "early-39.ts");
+});
+
+it("edits a pending line comment from its diff annotation", async () => {
+  setup({ paged: false });
+  const view: PullRequestDetailView = {
+    ...detail,
+    number: 3,
+    capabilities: {
+      ...detail.capabilities,
+      review: { ...detail.capabilities.review, inlineComment: true },
+    },
+    viewerPermissions: { ...detail.viewerPermissions, comment: true },
+  };
+  const container = pagedContainer();
+  await using screen = await render(tab(0, null, undefined, undefined, view), { container });
+  await screen.getByRole("button", { name: "Expand diff", exact: true }).click();
+  const codeLine = screen.getByText("three()", { exact: true });
+  await expect.element(codeLine).toBeVisible();
+  const diff = codeLine.element().getRootNode() as ShadowRoot;
+  const lineNumber = diff.querySelector<HTMLElement>("[data-column-number='4']")!;
+  await page.elementLocator(lineNumber).click();
+
+  const editor = screen.getByRole("textbox", { name: "Comment on lines a.ts:4" });
+  await editor.fill("Check the timeout.");
+  await screen.getByRole("button", { name: "Add to review" }).click();
+  const edit = screen.getByRole("button", { name: "Edit this comment" });
+  await edit.click();
+  await expect.element(editor).toHaveFocus();
+  await expect.element(editor).toHaveValue("Check the timeout.");
+
+  await editor.fill("Discard this revision.");
+  await screen.rerender(<div />);
+  await screen.rerender(tab(0, null, undefined, undefined, view));
+  await expect.element(editor).toHaveValue("Discard this revision.");
+  await expect.element(editor).not.toHaveFocus();
+  (editor.element() as HTMLTextAreaElement).focus();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(screen.getByText("Check the timeout.")).toBeVisible();
+
+  await edit.click();
+  await editor.fill("Check the retry timeout.");
+  await screen.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.element(screen.getByText("Check the retry timeout.")).toBeVisible();
+  await expect.element(screen.getByText("Check the timeout.")).not.toBeInTheDocument();
+});
+
+it("restores the open comment and reading position after the code tab remounts", async () => {
+  setup({ paged: true });
+  const view: PullRequestDetailView = {
+    ...detail,
+    number: 2,
+    capabilities: {
+      ...detail.capabilities,
+      review: { ...detail.capabilities.review, inlineComment: true },
+    },
+    viewerPermissions: { ...detail.viewerPermissions, comment: true },
+  };
+  const container = pagedContainer();
+  await using screen = await render(
+    tab(0, { path: "late.test.ts", nonce: 1 }, undefined, undefined, view),
+    {
+      container,
+    },
+  );
+  await expectFileHeaderShown(screen, container, "late.test.ts");
+  const header = screen.getByText("late.test.ts", { exact: true }).first().element();
+  const lastFile = header.getRootNode() as ShadowRoot;
+  const lineNumber = lastFile.querySelector<HTMLElement>("[data-column-number='4']")!;
+  await page.elementLocator(lineNumber).click();
+  const comment = screen.getByRole("textbox", { name: "Comment on lines late.test.ts:4" });
+  await expect.element(comment).toBeVisible();
+  await comment.fill("This is still a draft.");
+
+  await screen.rerender(<div />);
+  await screen.rerender(tab(0, null, undefined, undefined, view));
+
+  await expectFileHeaderShown(screen, container, "late.test.ts");
+  await expect.element(comment).toHaveValue("This is still a draft.");
+  await expect.element(comment).not.toHaveFocus();
+
+  await screen.getByRole("button", { name: "Collapse all files" }).click();
+  await screen.getByRole("button", { name: "Find draft" }).click();
+  await expect.element(comment).toHaveValue("This is still a draft.");
+
+  await screen.getByRole("button", { name: "Diff options" }).click();
+  await page.getByRole("menuitemcheckbox", { name: "Hide whitespace changes" }).click();
+  await userEvent.keyboard("{Escape}");
+  const filteredHeader = screen.getByText("late.test.ts", { exact: true }).first().element();
+  await page
+    .elementLocator((filteredHeader.getRootNode() as ShadowRoot).host)
+    .getByRole("button", { name: "Expand diff" })
+    .click();
+  await vi.waitFor(() => expect(comment.element()).toHaveValue("This is still a draft."));
+
+  await screen.rerender(<div />);
+  await screen.rerender(tab(0, null, undefined, undefined, view, `${mocks.viewKey}:other`));
+  await expectFileHeaderShown(screen, container, "early-0.ts");
+  await screen.getByRole("button", { name: "Find draft" }).click();
+  await vi.waitFor(() => expect(comment.element()).toHaveValue("This is still a draft."));
 });
 
 it("pages forward to a file asked for that is not loaded yet, then scrolls to it", async () => {

@@ -26,8 +26,9 @@ export function createCodeViewScrollRestore() {
   let viewer: Viewer | undefined;
   let handle: ScrollRestoreHandle | null = null;
   let pending: number | null = null;
+  let active = true;
   const flush = () => {
-    if (pending === null || !viewer || !handle || viewer.getHeight() === 0) return;
+    if (!active || pending === null || !viewer || !handle || viewer.getHeight() === 0) return;
     const maxScrollTop = viewer.getScrollHeight() - viewer.getHeight();
     if (maxScrollTop < pending && !settled) {
       loadMore?.();
@@ -39,7 +40,16 @@ export function createCodeViewScrollRestore() {
     if (position > 0) handle.scrollTo({ type: "position", position });
   };
   return {
-    update(nextScopeKey: string | null, nextSettled: boolean, nextLoadMore: (() => void) | null) {
+    update(
+      nextScopeKey: string | null,
+      nextSettled: boolean,
+      nextLoadMore: (() => void) | null,
+      nextActive = true,
+    ) {
+      if (!active && nextActive) {
+        pending = nextScopeKey === null ? null : (scrollTopByScopeKey.get(nextScopeKey) ?? null);
+      }
+      active = nextActive;
       scopeKey = nextScopeKey;
       settled = nextSettled;
       loadMore = nextLoadMore;
@@ -54,7 +64,7 @@ export function createCodeViewScrollRestore() {
       flush();
     },
     onScroll(scrollTop: number, source: object) {
-      if (source !== viewer || pending !== null || scopeKey === null) return;
+      if (!active || source !== viewer || pending !== null || scopeKey === null) return;
       scrollTopByScopeKey.set(scopeKey, scrollTop);
     },
     /** Something else positions the viewer, such as a file reveal or collapsing every file. */
@@ -70,9 +80,10 @@ export function useCodeViewScrollRestore(
   scopeKey: string | null,
   settled: boolean,
   loadMore: (() => void) | null,
+  active = true,
 ) {
   const [restore] = useState(createCodeViewScrollRestore);
-  restore.update(scopeKey, settled, loadMore);
+  restore.update(scopeKey, settled, loadMore, active);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a loaded batch can leave the viewer's rendered items alone, so no ref or post-render call re-checks the pending position
   useEffect(() => restore.flush());
   return restore;

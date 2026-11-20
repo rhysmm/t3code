@@ -49,6 +49,7 @@ export interface ExcerptNoteMarker {
 }
 
 export interface ExcerptCommenting {
+  readonly reviewKey: string;
   readonly canComment: boolean;
   /** The host anchors a comment to a range of lines rather than to its last one. */
   readonly rangeComments: boolean;
@@ -61,7 +62,6 @@ export interface ExcerptCommenting {
     readonly startPosition?: PullRequestReviewPosition | undefined;
     readonly body: string;
   }) => void;
-  readonly onRemove: (commentId: string) => void;
   readonly onAskAgent: ((comment: ReviewCommentContext, request: string) => void) | null;
 }
 
@@ -285,13 +285,16 @@ function ExcerptDiff({
                 ))}
               </div>
             ) : null}
-            {annotation.metadata.pending.map((comment) => (
-              <PendingReviewCommentCard
-                key={comment.id}
-                comment={comment}
-                onRemove={() => commenting?.onRemove(comment.id)}
-              />
-            ))}
+            {commenting !== null
+              ? annotation.metadata.pending.map((comment) => (
+                  <PendingReviewCommentCard
+                    key={comment.id}
+                    comment={comment}
+                    reviewKey={commenting.reviewKey}
+                    completionScope={commenting.completionScope}
+                  />
+                ))
+              : null}
             {annotation.metadata.draft && draft !== null && commenting !== null ? (
               <DiffCommentAnnotation
                 kind="draft"

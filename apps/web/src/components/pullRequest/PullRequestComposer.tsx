@@ -42,7 +42,6 @@ export function PullRequestComposer({
 }) {
   const term = sourceControlClients.get(detail.provider).changeRequest.singular;
   const [open, setOpen] = useState(false);
-  const [reviewPending, setReviewPending] = useState(false);
   const [requestedMode, setRequestedMode] = useState<"comment" | "review">("comment");
   const commentRef = useRef<HTMLTextAreaElement>(null);
   const reviewRef = useRef<HTMLTextAreaElement>(null);
@@ -50,6 +49,7 @@ export function PullRequestComposer({
   const clearComments = usePullRequestReviewStore((store) => store.clear);
   // Unsent summaries outlive the popover; select a boolean to avoid per-keystroke renders.
   const reviewKey = pullRequestReviewKey(reference);
+  const reviewPending = usePullRequestReviewStore((store) => store.pendingReviews.has(reviewKey));
   const summaryStarted = usePullRequestReviewStore(
     (store) => (store.summaries[reviewKey] ?? "").trim().length > 0,
   );
@@ -162,8 +162,6 @@ export function PullRequestComposer({
                 .get(detail.provider)
                 .reviewSummaryRequired("request-changes")}
               textareaRef={reviewRef}
-              pending={reviewPending}
-              onPendingChange={setReviewPending}
               onSubmitted={() => {
                 setOpen(false);
                 onReviewSubmitted();

@@ -13,21 +13,71 @@ function comment(id: string, body = id): PendingReviewComment {
 
 describe("pull request review drafts", () => {
   beforeEach(() => {
-    usePullRequestReviewStore.setState({ drafts: {}, summaries: {} });
+    usePullRequestReviewStore.setState({
+      drafts: {},
+      summaries: {},
+      commentEdits: {},
+      pendingReviews: new Set(),
+      replies: {},
+      pendingReplies: new Set(),
+    });
   });
 
-  it("removes only the line comments included in a submitted snapshot", () => {
+  it("saves an edit in place and removes only the line comments included in a submission", () => {
     const store = usePullRequestReviewStore.getState();
     store.addComment("review-a", comment("submitted"));
-    const submittedIds =
-      usePullRequestReviewStore.getState().drafts["review-a"]?.map((entry) => entry.id) ?? [];
+    const edited = {
+      ...comment("edited"),
+      oldPath: "src/old-app.ts",
+      startPosition: { kind: "added" as const, newLine: 1 },
+      position: { kind: "added" as const, newLine: 3 },
+    };
+    store.addComment("review-a", edited);
+    store.beginCommentEdit("review-a", "edited");
+    store.saveCommentEdit("review-a", "edited", "Revised");
+    const snapshot = usePullRequestReviewStore.getState().drafts["review-a"] ?? [];
+    expect(snapshot).toEqual([comment("submitted"), { ...edited, body: "Revised" }]);
 
-    usePullRequestReviewStore.getState().addComment("review-a", comment("added-in-flight"));
-    usePullRequestReviewStore.getState().removeComments("review-a", submittedIds);
+    expect(store.beginReviewSubmission("review-a")).toBe(true);
+    store.addComment("review-a", comment("added-in-flight"));
+    store.removeComments(
+      "review-a",
+      snapshot.map((entry) => entry.id),
+    );
+    store.finishReviewSubmission("review-a");
 
     expect(usePullRequestReviewStore.getState().drafts["review-a"]).toEqual([
       comment("added-in-flight"),
     ]);
+  });
+
+  it("guards edits and review submission and closes deleted editors", () => {
+    const store = usePullRequestReviewStore.getState();
+    store.addComment("review-a", comment("first"));
+    store.addComment("review-a", comment("second"));
+    store.addComment("review-b", comment("other"));
+
+    expect(store.beginReviewSubmission("review-a")).toBe(true);
+    expect(store.beginReviewSubmission("review-a")).toBe(false);
+    expect(store.beginCommentEdit("review-a", "first")).toBe(false);
+    expect(store.beginCommentEdit("review-b", "other")).toBe(true);
+    store.finishReviewSubmission("review-a");
+
+    expect(store.beginCommentEdit("review-a", "first")).toBe(true);
+    expect(store.beginCommentEdit("review-a", "second")).toBe(true);
+    store.setCommentEditBody("review-a", "second", "Revised");
+    expect(store.beginReviewSubmission("review-a")).toBe(false);
+
+    store.removeComment("review-a", "first");
+    store.setCommentEditBody("review-a", "first", "Stale editor");
+    expect(usePullRequestReviewStore.getState().commentEdits["review-a"]).toEqual({
+      second: "Revised",
+    });
+    store.clear("review-a");
+    expect(usePullRequestReviewStore.getState().commentEdits).toEqual({
+      "review-b": { other: "other" },
+    });
+    expect(store.beginReviewSubmission("review-a")).toBe(true);
   });
 
   it("keeps drafts on different hosts separate when a thread reviews the same repository and number", () => {
@@ -61,5 +111,18 @@ describe("pull request review drafts", () => {
     usePullRequestReviewStore.getState().clearSummary("review-a", "Submitted body");
 
     expect(usePullRequestReviewStore.getState().summaries["review-a"]).toBe("Revised body");
+  });
+
+  it("guards an in-flight reply across editors and keeps text revised during submission", () => {
+    const store = usePullRequestReviewStore.getState();
+    store.setReply("thread-a", "Submitted reply");
+    expect(store.beginReply("thread-a")).toBe(true);
+    expect(usePullRequestReviewStore.getState().beginReply("thread-a")).toBe(false);
+    store.setReply("thread-a", "Revised reply");
+    store.clearReply("thread-a", "Submitted reply");
+    store.finishReply("thread-a");
+
+    expect(usePullRequestReviewStore.getState().replies["thread-a"]).toBe("Revised reply");
+    expect(store.beginReply("thread-a")).toBe(true);
   });
 });

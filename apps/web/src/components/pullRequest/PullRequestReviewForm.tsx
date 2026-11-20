@@ -58,8 +58,6 @@ export function PullRequestReviewForm({
   verdicts,
   requestChangesSummaryRequired,
   textareaRef,
-  pending,
-  onPendingChange,
   onSubmitted,
 }: {
   environmentId: EnvironmentId;
@@ -72,15 +70,16 @@ export function PullRequestReviewForm({
   verdicts: ReadonlyArray<PullRequestReviewVerdict>;
   requestChangesSummaryRequired: boolean;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
-  pending: boolean;
-  onPendingChange: (pending: boolean) => void;
   onSubmitted: () => void;
 }) {
   const [requestedVerdict, setRequestedVerdict] = useState<PullRequestReviewVerdict>("comment");
   const comments = usePendingReviewComments(reference);
   const reviewKey = pullRequestReviewKey(reference);
+  const pending = usePullRequestReviewStore((store) => store.pendingReviews.has(reviewKey));
+  const hasCommentEdits = usePullRequestReviewStore(
+    (store) => store.commentEdits[reviewKey] !== undefined,
+  );
   const body = usePullRequestReviewStore((store) => store.summaries[reviewKey] ?? "");
-  const removeComments = usePullRequestReviewStore((store) => store.removeComments);
   const setSummary = usePullRequestReviewStore((store) => store.setSummary);
   const speech = useTextFieldSpeech({
     environmentId,
@@ -96,7 +95,6 @@ export function PullRequestReviewForm({
   useEffect(() => {
     if (!active) cancel();
   }, [active, cancel]);
-  const clearSummary = usePullRequestReviewStore((store) => store.clearSummary);
   const submitReview = useAtomCommand(pullRequestEnvironment.submitReview, {
     reportFailure: false,
   });
@@ -106,38 +104,44 @@ export function PullRequestReviewForm({
     offered.find((verdict) => verdict.value === requestedVerdict) ?? offered[0];
 
   const submit = async (verdict: (typeof VERDICTS)[number], text: string) => {
-    const submittedComments = usePullRequestReviewStore.getState().drafts[reviewKey] ?? [];
-    if (pending || !canSubmit(verdict.value, text, submittedComments.length)) return;
-    const submittedBody = text;
-    onPendingChange(true);
-    const result = await submitReview({
-      environmentId,
-      input: {
-        ...reference,
-        verdict: verdict.value,
-        body: submittedBody,
-        comments: submittedComments,
-      },
-    });
-    onPendingChange(false);
-    if (result._tag === "Failure") {
-      toastManager.add({
-        type: "error",
-        title: "The review could not be submitted",
-        description: readableFailure(
-          squashAtomCommandFailure(result),
-          "The host refused the review. Your draft is still here to try again.",
-        ),
-      });
+    const store = usePullRequestReviewStore.getState();
+    const submittedComments = store.drafts[reviewKey] ?? [];
+    if (
+      !canSubmit(verdict.value, text, submittedComments.length) ||
+      !store.beginReviewSubmission(reviewKey)
+    )
       return;
+    try {
+      const result = await submitReview({
+        environmentId,
+        input: {
+          ...reference,
+          verdict: verdict.value,
+          body: text,
+          comments: submittedComments,
+        },
+      });
+      if (result._tag === "Failure") {
+        toastManager.add({
+          type: "error",
+          title: "The review could not be submitted",
+          description: readableFailure(
+            squashAtomCommandFailure(result),
+            "The host refused the review. Your draft is still here to try again.",
+          ),
+        });
+        return;
+      }
+      // Preserve new comments and summary edits made during submission.
+      store.removeComments(
+        reviewKey,
+        submittedComments.map((comment) => comment.id),
+      );
+      store.clearSummary(reviewKey, text);
+      toastManager.add({ type: "success", title: verdict.sent(term) });
+    } finally {
+      store.finishReviewSubmission(reviewKey);
     }
-    // Preserve comments and summary edits made during submission.
-    removeComments(
-      reviewKey,
-      submittedComments.map((comment) => comment.id),
-    );
-    clearSummary(reviewKey, submittedBody);
-    toastManager.add({ type: "success", title: verdict.sent(term) });
     onSubmitted();
   };
 
@@ -172,10 +176,25 @@ export function PullRequestReviewForm({
           ) {
             event.preventDefault();
             event.stopPropagation();
-            speech.submitAfterDictation((text) => void submit(selectedVerdict, text));
+            if (!hasCommentEdits)
+              speech.submitAfterDictation((text) => void submit(selectedVerdict, text));
           }
         }}
       />
+      {hasCommentEdits ? (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <p role="status" className="text-xs text-muted-foreground">
+            Save or cancel your comment edits before submitting.
+          </p>
+          <Button
+            size="xs"
+            variant="ghost"
+            onClick={() => usePullRequestReviewStore.getState().cancelCommentEdits(reviewKey)}
+          >
+            Cancel edits
+          </Button>
+        </div>
+      ) : null}
       <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
         <TextFieldSpeechControls speech={speech} disabled={pending} />
         {offered.length > 1 ? (
@@ -209,11 +228,12 @@ export function PullRequestReviewForm({
           disabled={
             speech.preparing ||
             pending ||
+            hasCommentEdits ||
             selectedVerdict === undefined ||
             (!canSubmit(selectedVerdict.value, body, comments.length) && !speech.blocksSubmission)
           }
           onClick={() => {
-            if (selectedVerdict !== undefined)
+            if (selectedVerdict !== undefined && !hasCommentEdits)
               speech.submitAfterDictation((text) => void submit(selectedVerdict, text));
           }}
         >

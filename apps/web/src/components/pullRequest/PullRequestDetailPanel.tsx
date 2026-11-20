@@ -110,6 +110,11 @@ import { SourceControlAppAccessNotice } from "../SourceControlAppAccessNotice";
 import { DiffPanelLoadingState } from "../DiffPanelShell";
 import { PullRequestsUnavailableState } from "./PullRequestsUnavailableState";
 import type { PullRequestAgentSelectionInput } from "./PullRequestCodeTab";
+import {
+  condensedPullRequestCodeViews,
+  pullRequestCodeViewCommits,
+  pullRequestCodeViewKey,
+} from "./pullRequestCodeViewState";
 import { openOnHostLabel } from "./pullRequestLinkContextMenu";
 import { PullRequestMarkdownContext } from "./PullRequestMarkdown";
 import { pullRequestMarkdownPlugins } from "./pullRequestMarkdown.logic";
@@ -409,14 +414,25 @@ export function PullRequestDetailPanel({
     onTabChange?.(next);
   };
   const [timelineOrder, setTimelineOrder] = useState<"newest" | "oldest">("newest");
+  const codeViewKey = pullRequestCodeViewKey(environmentId, reference, threadRef);
   const [codeCommitScope, setCodeCommitScope] = useState<{
-    readonly pullRequestKey: string;
+    readonly viewKey: string;
     readonly oid: string | null;
-  }>(() => ({ pullRequestKey, oid: pullRequestLinkCommit(revealUrl) }));
+  }>(() => ({
+    viewKey: codeViewKey,
+    oid:
+      linkedTab(revealAnchor) === "code"
+        ? pullRequestLinkCommit(revealUrl)
+        : (pullRequestCodeViewCommits.get(codeViewKey) ?? null),
+  }));
   const selectedCodeCommitOid =
-    codeCommitScope.pullRequestKey === pullRequestKey ? codeCommitScope.oid : null;
+    codeCommitScope.viewKey === codeViewKey
+      ? codeCommitScope.oid
+      : (pullRequestCodeViewCommits.get(codeViewKey) ?? null);
   const selectCodeCommit = (oid: string | null) => {
-    setCodeCommitScope({ pullRequestKey, oid });
+    if (oid === null) pullRequestCodeViewCommits.delete(codeViewKey);
+    else pullRequestCodeViewCommits.set(codeViewKey, oid);
+    setCodeCommitScope({ viewKey: codeViewKey, oid });
   };
   const openCommit = (oid: string) => {
     selectCodeCommit(oid);
@@ -476,7 +492,16 @@ export function PullRequestDetailPanel({
   const [condensedByTab, setCondensedByTab] = useState<
     Partial<Record<PullRequestDetailTab, boolean>>
   >({});
-  const condensed = condensedByTab[tab] ?? false;
+  const [codeCondensed, setCodeCondensed] = useState(() => ({
+    viewKey: codeViewKey,
+    value: condensedPullRequestCodeViews.has(codeViewKey),
+  }));
+  const condensed =
+    tab === "code"
+      ? codeCondensed.viewKey === codeViewKey
+        ? codeCondensed.value
+        : condensedPullRequestCodeViews.has(codeViewKey)
+      : (condensedByTab[tab] ?? false);
   const scrollerByTab = useRef<Partial<Record<PullRequestDetailTab, HTMLElement | null>>>({});
   // Fresh ref callbacks would detach and reattach every scroller on each render.
   const [scrollerRefs] = useState(() => ({
@@ -1834,7 +1859,7 @@ export function PullRequestDetailPanel({
           const scroller = scrollerByTab.current[tab];
           if (event.target !== scroller || scroller === null || scroller === undefined) return;
           const top = scroller.scrollTop;
-          const previous = condensedByTab[tab] ?? false;
+          const previous = condensed;
           const foldHeight = foldRef.current?.scrollHeight ?? 0;
           let next = previous;
           if (previous) {
@@ -1844,7 +1869,15 @@ export function PullRequestDetailPanel({
             compensationRef.current = { tab, scroller, target: top - chromeDelta };
             next = true;
           }
-          if (next !== previous) setCondensedByTab({ ...condensedByTab, [tab]: next });
+          if (next !== previous) {
+            if (tab === "code") {
+              if (next) condensedPullRequestCodeViews.add(codeViewKey);
+              else condensedPullRequestCodeViews.delete(codeViewKey);
+              setCodeCondensed({ viewKey: codeViewKey, value: next });
+            } else {
+              setCondensedByTab({ ...condensedByTab, [tab]: next });
+            }
+          }
         }}
       >
         {detailQuery.error && !detail ? (
@@ -1962,6 +1995,8 @@ export function PullRequestDetailPanel({
                 >
                   <PullRequestCodeTab
                     scrollerRef={scrollerRefs.code}
+                    viewKey={codeViewKey}
+                    active={tab === "code"}
                     onAddToAgentSelection={addSelectionToAgent}
                     environmentId={environmentId}
                     reference={reference}

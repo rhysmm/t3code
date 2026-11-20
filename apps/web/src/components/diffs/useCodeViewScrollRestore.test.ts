@@ -78,4 +78,17 @@ describe("createCodeViewScrollRestore", () => {
     mount("thread-d", again);
     expect(again.scrolls).toEqual([]);
   });
+
+  it("ignores scroll changes while a tab is hidden, then restores the same viewer", () => {
+    const view = viewer(10_000);
+    const restore = mount("tab", view);
+    restore.onScroll(4000, view.instance);
+
+    restore.update("tab", true, null, false);
+    restore.onScroll(0, view.instance);
+
+    restore.update("tab", true, null, true);
+    restore.flush();
+    expect(view.scrolls).toEqual([{ type: "position", position: 4032 }]);
+  });
 });

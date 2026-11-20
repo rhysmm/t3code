@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  ProjectId,
   PullRequestActor,
   PullRequestDiffSide,
   PullRequestRef,
@@ -23,6 +24,7 @@ import { RelativeTime } from "~/components/RelativeTime";
 import { cn } from "~/lib/utils";
 import { SpeechTextField, TextFieldSpeechControls } from "~/speech/useTextFieldSpeech";
 
+import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { PullRequestEditButton } from "./PullRequestEditButton";
@@ -36,7 +38,11 @@ import { PullRequestActorAvatar, PullRequestActorLabel } from "./pullRequestPres
 import { PullRequestMarkdown } from "./PullRequestMarkdown";
 import { PullRequestMarkdownEditor } from "./PullRequestMarkdownEditor";
 import { PullRequestReactionBar } from "./PullRequestReactions";
-import type { PendingReviewComment } from "./pullRequestReviewStore";
+import {
+  pullRequestReviewKey,
+  usePullRequestReviewStore,
+  type PendingReviewComment,
+} from "./pullRequestReviewStore";
 import {
   PullRequestMarkdownTextarea,
   type PullRequestCompletionScope,
@@ -87,31 +93,83 @@ export function getReviewPositionAnchor(position: PullRequestReviewPosition): {
 
 export function PendingReviewCommentCard({
   comment,
-  onRemove,
+  reviewKey,
+  environmentId,
+  projectId,
+  completionScope,
 }: {
   comment: PendingReviewComment;
-  onRemove: () => void;
+  reviewKey: string;
+  environmentId?: EnvironmentId;
+  projectId?: ProjectId;
+  completionScope: PullRequestCompletionScope | null;
 }) {
+  const editText = usePullRequestReviewStore(
+    (store) => store.commentEdits[reviewKey]?.[comment.id],
+  );
+  const reviewPending = usePullRequestReviewStore((store) => store.pendingReviews.has(reviewKey));
+  const [focusEditor, setFocusEditor] = useState(false);
   return (
     <div
-      className={cn(CARD_CLASS, "border-dashed")}
+      className={cn(CARD_CLASS, "group border-dashed")}
       contentEditable={false}
       onPointerDown={(event) => event.stopPropagation()}
     >
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <MessageSquareIcon className="size-3.5" />
         <span>Pending. Sent when you submit the review</span>
-        <Button
-          size="icon-xs"
-          variant="ghost"
-          className="ml-auto"
-          aria-label="Discard this comment"
-          onClick={onRemove}
-        >
-          <Trash2Icon className="size-3.5" />
-        </Button>
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {editText === undefined ? (
+            <PullRequestEditButton
+              aria-label="Edit this comment"
+              disabled={reviewPending}
+              onClick={() => {
+                if (usePullRequestReviewStore.getState().beginCommentEdit(reviewKey, comment.id))
+                  setFocusEditor(true);
+              }}
+            />
+          ) : null}
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Discard this comment"
+            disabled={reviewPending}
+            onClick={() =>
+              usePullRequestReviewStore.getState().removeComment(reviewKey, comment.id)
+            }
+          >
+            <Trash2Icon className="size-3.5" />
+          </Button>
+        </div>
       </div>
-      <p className="mt-2 whitespace-pre-wrap leading-relaxed">{comment.body}</p>
+      {editText === undefined ? (
+        <p className="mt-2 whitespace-pre-wrap leading-relaxed">{comment.body}</p>
+      ) : (
+        <div className="-mx-3 -mb-2">
+          <DiffCommentAnnotation
+            environmentId={environmentId}
+            projectId={projectId}
+            ownerKey={`pr-pending-edit:${comment.id}`}
+            kind="draft"
+            rangeLabel={`${comment.path}:${getReviewPositionAnchor(comment.position).line}`}
+            text={editText}
+            onTextChange={(body) =>
+              usePullRequestReviewStore.getState().setCommentEditBody(reviewKey, comment.id, body)
+            }
+            focusOnMount={focusEditor}
+            onFocus={() => setFocusEditor(false)}
+            completionScope={completionScope}
+            submitLabel="Save"
+            shortcutHint="⌘/Ctrl Enter to save"
+            onCancel={() =>
+              usePullRequestReviewStore.getState().cancelCommentEdit(reviewKey, comment.id)
+            }
+            onComment={(body) =>
+              usePullRequestReviewStore.getState().saveCommentEdit(reviewKey, comment.id, body)
+            }
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -226,10 +284,17 @@ export function ReviewThreadCard({
 }) {
   const [expanded, setExpanded] = useState(hidden !== undefined || !thread.isResolved);
   const [replying, setReplying] = useState(false);
-  const [reply, setReply] = useState("");
+  const replyKey = JSON.stringify([environmentId, pullRequestReviewKey(reference), thread.id]);
+  const reply = usePullRequestReviewStore((store) => store.replies[replyKey] ?? "");
+  const pendingReply = usePullRequestReviewStore((store) => store.pendingReplies.has(replyKey));
+  const replyDisabled = pending || pendingReply;
+  const setReply = (text: string) => usePullRequestReviewStore.getState().setReply(replyKey, text);
+  const cancelReply = () => {
+    usePullRequestReviewStore.getState().clearReply(replyKey);
+    setReplying(false);
+  };
   const [editingId, setEditingId] = useState<string | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
-  const sendingRef = useRef(false);
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const [loadedPage, setLoadedPage] = useState<
     (PullRequestThreadCommentsResult & { readonly threadId: string }) | null
@@ -261,23 +326,27 @@ export function ReviewThreadCard({
 
   const send = async (text: string) => {
     const trimmed = text.trim();
-    if (trimmed.length === 0 || pending || sendingRef.current) return;
-    sendingRef.current = true;
-    const result = await settlePromise(() => onReply(trimmed));
-    sendingRef.current = false;
-    if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-    if (!result.value) return;
-    // Replies return no comment; retain loaded data and reopen pagination for a later read.
-    setLoadedPage((previous) =>
-      previous?.threadId === thread.id
-        ? {
-            ...previous,
-            nextCursor: previous.nextCursor ?? thread.nextCommentsCursor ?? null,
-          }
-        : previous,
-    );
-    setReply("");
-    setReplying(false);
+    const store = usePullRequestReviewStore.getState();
+    if (trimmed.length === 0 || pending || !store.beginReply(replyKey)) return;
+    const submittedDraft = store.replies[replyKey] ?? "";
+    try {
+      const result = await settlePromise(() => onReply(trimmed));
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      if (!result.value) return;
+      // Replies return no comment; retain loaded data and reopen pagination for a later read.
+      setLoadedPage((previous) =>
+        previous?.threadId === thread.id
+          ? {
+              ...previous,
+              nextCursor: previous.nextCursor ?? thread.nextCommentsCursor ?? null,
+            }
+          : previous,
+      );
+      store.clearReply(replyKey, submittedDraft);
+      setReplying(false);
+    } finally {
+      store.finishReply(replyKey);
+    }
   };
   const loadMore = async () => {
     if (nextCommentsCursor === null || loadingMore) return;
@@ -422,22 +491,22 @@ export function ReviewThreadCard({
           ) : null}
 
           {canReply ? (
-            replying ? (
+            replying || reply.length > 0 ? (
               <SpeechTextField
                 environmentId={environmentId}
                 projectId={reference.projectId}
-                ownerKey={JSON.stringify(["pr-reply", environmentId, reference, thread.id])}
+                ownerKey={`pr-reply:${replyKey}`}
                 text={reply}
                 textareaRef={replyRef}
                 onTextChange={setReply}
-                disabled={pending}
+                disabled={replyDisabled}
               >
                 {(speech) => (
                   <div className="mt-2">
                     <PullRequestMarkdownTextarea
                       ref={replyRef}
                       readOnly={speech.freezesEditor}
-                      autoFocus
+                      autoFocus={replying}
                       size="sm"
                       completionScope={completionScope}
                       value={reply}
@@ -446,23 +515,23 @@ export function ReviewThreadCard({
                       onValueChange={setReply}
                       onKeyDown={submitKeys({
                         value: reply,
-                        pending,
+                        pending: replyDisabled,
                         allowEmpty: speech.blocksSubmission,
                         onSubmit: () => speech.submitAfterDictation((text) => void send(text)),
                         onCancel: () =>
-                          speech.state.phase === "idle" ? setReplying(false) : speech.cancel(),
+                          speech.state.phase === "idle" ? cancelReply() : speech.cancel(),
                       })}
                     />
                     <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-                      <TextFieldSpeechControls speech={speech} disabled={pending} />
-                      <Button size="xs" variant="ghost" onClick={() => setReplying(false)}>
+                      <TextFieldSpeechControls speech={speech} disabled={replyDisabled} />
+                      <Button size="xs" variant="ghost" onClick={cancelReply}>
                         Cancel
                       </Button>
                       <Button
                         size="xs"
                         disabled={
                           speech.preparing ||
-                          pending ||
+                          replyDisabled ||
                           (!speech.blocksSubmission && reply.trim().length === 0)
                         }
                         onClick={() => speech.submitAfterDictation((text) => void send(text))}

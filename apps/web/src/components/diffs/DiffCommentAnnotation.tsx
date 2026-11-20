@@ -37,9 +37,11 @@ interface DiffCommentAnnotationProps {
   onDelete?: () => void;
   placeholder?: string;
   submitLabel?: string;
+  shortcutHint?: string;
   pending?: boolean;
   secondaryAction?: DiffCommentSecondaryAction;
   focusOnMount?: boolean;
+  onFocus?: () => void;
   /** Set only for pull request comments, where `@` completes the repository's users. */
   completionScope?: PullRequestCompletionScope | null;
 }
@@ -57,9 +59,11 @@ export function DiffCommentAnnotation({
   onDelete,
   placeholder = "Add a comment…",
   submitLabel = "Comment",
+  shortcutHint = "⌘/Ctrl Enter to send",
   pending = false,
   secondaryAction,
   focusOnMount = true,
+  onFocus,
   completionScope = null,
 }: DiffCommentAnnotationProps) {
   const [localDraftText, setLocalDraftText] = useState("");
@@ -141,6 +145,7 @@ export function DiffCommentAnnotation({
         onFocus={(event) => {
           const end = event.currentTarget.value.length;
           event.currentTarget.setSelectionRange(end, end);
+          onFocus?.();
         }}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
@@ -155,7 +160,7 @@ export function DiffCommentAnnotation({
         }}
       />
       <div className="mt-1.5 flex flex-wrap items-center gap-1">
-        <span className="mr-auto text-3xs text-muted-foreground/70">⌘/Ctrl Enter to send</span>
+        <span className="mr-auto text-3xs text-muted-foreground/70">{shortcutHint}</span>
         {speech ? <TextFieldSpeechControls speech={speech} disabled={pending} /> : null}
         <Button variant="ghost-muted" size="xs" onClick={onCancel}>
           Cancel
