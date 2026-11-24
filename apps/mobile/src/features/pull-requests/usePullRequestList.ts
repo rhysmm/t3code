@@ -1,10 +1,15 @@
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import {
   editHeldPullRequestListEntries,
   pullRequestHostAnswer,
   pullRequestPendingEditsFor,
 } from "@t3tools/client-runtime/state/pull-requests";
 import { RegistryContext, useAtomMount, useAtomSubscribe, useAtomValue } from "@effect/atom-react";
-import { executeAtomQuery, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  executeAtomQuery,
+  runAtomCommand,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import {
   pullRequestAuthorFilterKey,
   type EnvironmentId,
@@ -14,8 +19,10 @@ import {
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
+import { msg, useMessages } from "gt-react-native";
 import { use, useMemo, useState } from "react";
 import { environmentCatalog } from "../../connection/catalog";
+import { m } from "../../i18n/messages";
 import {
   composerPullRequests,
   pullRequestListPagesFamily,
@@ -134,7 +141,7 @@ async function loadNextPages(
         JSON.stringify(Object.entries(input.cursors).sort()) ===
           JSON.stringify(Object.entries(next.nextCursors).sort())
       )
-        throw new Error("Couldn't advance the list. Try again.");
+        throw new Error(m(msg("Couldn't advance the list. Try again.")));
     }),
   );
   return requestErrors(responses);
@@ -147,10 +154,12 @@ async function refreshHeads(
 ) {
   const responses = await Promise.allSettled(
     targets.map(async (target) => {
-      await composerPullRequests.invalidate.run(registry, {
-        environmentId: target.environmentId,
-        input: {},
-      });
+      await runAtomCommand(
+        registry,
+        composerPullRequests.invalidate,
+        { environmentId: target.environmentId, input: {} },
+        { reportFailure: false },
+      );
       if (signal.aborted) return;
       const response = await executeAtomQuery(
         registry,
@@ -200,6 +209,7 @@ const settledError = (result: AsyncResult.AsyncResult<string | null, never>) =>
   AsyncResult.isSuccess(result) && !result.waiting ? result.value : null;
 
 export function usePullRequestList(targets: readonly ListTarget[]) {
+  const messages = useMessages();
   const registry = use(RegistryContext);
   const scopeKey = JSON.stringify(targets);
   const sources = useAtomValue(sourcesFamily(scopeKey));
@@ -353,11 +363,14 @@ export function usePullRequestList(targets: readonly ListTarget[]) {
           {
             environmentId: target.environmentId,
             projectTitle: "",
-            message: cause instanceof Error ? cause.message : "Couldn't load pull requests.",
+            message:
+              cause instanceof Error
+                ? (errorDisplayMessage(cause, messages) ?? cause.message)
+                : messages(msg("Couldn't load pull requests.")),
           },
         ];
       }),
-    [sources],
+    [sources, messages],
   );
   const listing = useMemo(
     () => ({ ...data, entries, errors: [...data.errors, ...errors] }),
@@ -393,8 +406,8 @@ function requestErrors(results: readonly PromiseSettledResult<unknown>[]) {
         result.status === "rejected"
           ? [
               result.reason instanceof Error
-                ? result.reason.message
-                : "Couldn't load pull requests.",
+                ? (errorDisplayMessage(result.reason, m) ?? result.reason.message)
+                : m(msg("Couldn't load pull requests.")),
             ]
           : [],
       )

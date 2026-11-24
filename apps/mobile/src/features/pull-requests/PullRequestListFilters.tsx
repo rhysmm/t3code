@@ -6,6 +6,8 @@ import {
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
+import { msg, useGT, useMessages } from "gt-react-native";
+import type { ReactNode } from "react";
 import { Platform, ScrollView } from "react-native";
 import type { MenuProps } from "../../components/ui/Menu.types";
 import { ListFilterMenu } from "../layout/workspace/ListFilterMenu";
@@ -13,7 +15,6 @@ import { environmentProjects } from "../../state/projects";
 import { environmentThreadShells } from "../../state/threads";
 import { useMobileProjectGroupingSettings } from "../../state/project-grouping";
 import { buildHomeProjectScopes, sortHomeProjectScopes } from "../home/homeThreadList";
-import { useGT } from "gt-react-native";
 import {
   DEFAULT_PR_LIST_CONTROLS,
   pullRequestAuthorKey,
@@ -23,23 +24,43 @@ import {
   togglePullRequestAuthor,
   type PullRequestListControls,
 } from "./pullRequestList";
+import type { MessageResolver } from "../../i18n/messages";
 
-const STATES = { open: "Open", closed: "Closed", merged: "Merged", all: "All states" } as const;
-const INVOLVEMENT = { all: "All PRs", reviewing: "Your review", authored: "By you" } as const;
-const DRAFTS = { all: "All drafts", only: "Drafts only", hide: "Hide drafts" } as const;
+const STATES = {
+  open: msg("Open", { $context: "pull request state filter" }),
+  closed: msg("Closed", { $context: "pull request state filter" }),
+  merged: msg("Merged", { $context: "pull request state filter" }),
+  all: msg("All states"),
+};
+const INVOLVEMENT = {
+  all: msg("All PRs"),
+  reviewing: msg("Your review"),
+  authored: msg("By you"),
+};
+const DRAFTS = { all: msg("All drafts"), only: msg("Drafts only"), hide: msg("Hide drafts") };
 const REVIEWS = {
-  all: "All reviews",
-  approved: "Approved",
-  "changes-requested": "Changes requested",
-  "review-required": "Review required",
-  none: "No reviews",
-} as const;
-const CHECKS = { all: "All checks", passing: "Passing", failing: "Failing" } as const;
+  all: msg("All reviews"),
+  approved: msg("Approved", { $context: "review status filter" }),
+  "changes-requested": msg("Changes requested"),
+  "review-required": msg("Review required"),
+  none: msg("No reviews"),
+};
+const CHECKS = {
+  all: msg("All checks"),
+  passing: msg("Passing", { $context: "CI checks filter" }),
+  failing: msg("Failing", { $context: "CI checks filter" }),
+};
+const CHECKS_TITLES = { passing: msg("Passing checks"), failing: msg("Failing checks") };
 const SORTS = {
-  updated: "Recently updated",
-  created: "Newest created",
-  oldest: "Oldest updated",
-} as const;
+  updated: msg("Recently updated"),
+  created: msg("Newest created"),
+  oldest: msg("Oldest updated"),
+};
+const resolveOptions = <Key extends string>(
+  options: Readonly<Record<Key, string>>,
+  resolve: MessageResolver,
+) =>
+  Object.fromEntries(Object.entries<string>(options).map(([key, title]) => [key, resolve(title)]));
 // A 12dp inset keeps 16dp chips concentric with Android's 28dp ScreenContent corner.
 const ROW_STYLE =
   Platform.OS === "android"
@@ -130,6 +151,7 @@ export function usePullRequestListFilters(props: {
 }) {
   const gt = useGT();
   const { value } = props;
+  const m = useMessages();
   const projects = useProjectsInSidebarOrder(props.projects);
   const selectedLabels = value.filters.labels?.flat() ?? [];
   const selectedLabelSet = new Set(selectedLabels);
@@ -263,18 +285,24 @@ export function usePullRequestListFilters(props: {
   const more: MenuProps["actions"] = [
     {
       id: "drafts",
-      title: value.filters.draft ? DRAFTS[value.filters.draft] : "Drafts",
-      subactions: choices("draft", DRAFTS, value.filters.draft ?? "all"),
+      title: value.filters.draft
+        ? m(DRAFTS[value.filters.draft])
+        : m(msg("Drafts", { $context: "filter menu" })),
+      subactions: choices("draft", resolveOptions(DRAFTS, m), value.filters.draft ?? "all"),
     },
     {
       id: "reviews",
-      title: value.filters.review ? REVIEWS[value.filters.review] : "Reviews",
-      subactions: choices("review", REVIEWS, value.filters.review ?? "all"),
+      title: value.filters.review
+        ? m(REVIEWS[value.filters.review])
+        : m(msg("Reviews", { $context: "filter menu" })),
+      subactions: choices("review", resolveOptions(REVIEWS, m), value.filters.review ?? "all"),
     },
     {
       id: "checks",
-      title: value.filters.checks ? `${CHECKS[value.filters.checks]} checks` : "Checks",
-      subactions: choices("checks", CHECKS, value.filters.checks ?? "all"),
+      title: value.filters.checks
+        ? m(CHECKS_TITLES[value.filters.checks])
+        : m(msg("Checks", { $context: "filter menu" })),
+      subactions: choices("checks", resolveOptions(CHECKS, m), value.filters.checks ?? "all"),
     },
     {
       id: "projects",
@@ -282,11 +310,11 @@ export function usePullRequestListFilters(props: {
         projects.find(
           (project) =>
             project.id === value.projectId && project.environmentId === value.projectEnvironmentId,
-        )?.title ?? "Project",
+        )?.title ?? m(msg("Project", { $context: "filter menu" })),
       subactions: choices(
         "project",
         Object.fromEntries([
-          ["", "All projects"],
+          ["", m(msg("All projects"))],
           ...projects.map((project) => [
             JSON.stringify([project.environmentId, project.id]),
             project.title,
@@ -295,11 +323,15 @@ export function usePullRequestListFilters(props: {
         value.projectId ? JSON.stringify([value.projectEnvironmentId, value.projectId]) : "",
       ),
     },
-    { id: "sort", title: SORTS[value.sort], subactions: choices("sort", SORTS, value.sort) },
+    {
+      id: "sort",
+      title: m(SORTS[value.sort]),
+      subactions: choices("sort", resolveOptions(SORTS, m), value.sort),
+    },
   ];
   const reset = (withEnvironment: boolean): MenuProps["actions"][number] => ({
     id: id("reset", withEnvironment ? "environment" : ""),
-    title: "Reset filters",
+    title: m(msg("Reset filters")),
     attributes: {
       disabled:
         count === 0 &&
@@ -317,16 +349,24 @@ export function usePullRequestListFilters(props: {
   const environmentActions = choices(
     "environment",
     Object.fromEntries([
-      ["", "All environments"],
+      ["", m(msg("All environments"))],
       ...props.environments.map((environment) => [environment.id, environment.label]),
     ]),
     props.environmentId ?? "",
   );
-  const stateActions = choices("state", STATES, value.state);
-  const involvementActions = choices("involvement", INVOLVEMENT, value.involvement);
+  const stateActions = choices("state", resolveOptions(STATES, m), value.state);
+  const involvementActions = choices(
+    "involvement",
+    resolveOptions(INVOLVEMENT, m),
+    value.involvement,
+  );
   const labelActions: MenuProps["actions"] = [
-    { id: id("search", "labels"), title: "Search labels…", image: "magnifyingglass" },
-    { id: id("labels", ""), title: "All labels", state: selectedLabels.length ? "off" : "on" },
+    { id: id("search", "labels"), title: m(msg("Search labels…")), image: "magnifyingglass" },
+    {
+      id: id("labels", ""),
+      title: m(msg("All labels")),
+      state: selectedLabels.length ? "off" : "on",
+    },
     ...labels.map((label) => {
       const color = props.labelColors[label.toLowerCase()];
       return {
@@ -352,7 +392,7 @@ export function usePullRequestListFilters(props: {
       const selected = selectedAuthors.includes(login);
       return {
         id: id("author", login),
-        title: login === "me" ? gt("Me") : login,
+        title: login === "me" ? gt("Me", { $context: "author filter, the current user" }) : login,
         state: selected ? ("on" as const) : ("off" as const),
         attributes: {
           disabled: !selected && selectedAuthors.length >= MAX_PULL_REQUEST_AUTHOR_FILTERS,
@@ -366,10 +406,26 @@ export function usePullRequestListFilters(props: {
     Platform.OS === "android"
       ? {
           actions: [
-            { id: "environment", title: "Environment", subactions: environmentActions },
-            { id: "state", title: "State", subactions: stateActions },
-            { id: "involvement", title: "Involvement", subactions: involvementActions },
-            { id: "labels", title: "Labels", subactions: labelActions },
+            {
+              id: "environment",
+              title: m(msg("Environment", { $context: "filter menu" })),
+              subactions: environmentActions,
+            },
+            {
+              id: "state",
+              title: m(msg("State", { $context: "filter menu" })),
+              subactions: stateActions,
+            },
+            {
+              id: "involvement",
+              title: m(msg("Involvement", { $context: "filter menu" })),
+              subactions: involvementActions,
+            },
+            {
+              id: "labels",
+              title: m(msg("Labels", { $context: "filter menu" })),
+              subactions: labelActions,
+            },
             { id: "author", title: gt("Authors"), subactions: authorActions },
             ...more,
             reset(true),
@@ -387,7 +443,7 @@ export function usePullRequestListFilters(props: {
     environmentLabel:
       props.environments.length > 1
         ? (props.environments.find((environment) => environment.id === props.environmentId)
-            ?.label ?? "All environments")
+            ?.label ?? m(msg("All environments")))
         : null,
     environmentActions,
     state: value.state,
@@ -411,10 +467,12 @@ export function PullRequestListFilters(props: {
   /** Android sidebar rows sit further in than full-width rows; the pills follow them. */
   readonly sidebar?: boolean;
   readonly filters: ReturnType<typeof usePullRequestListFilters>;
+  readonly savedViewsMenu: ReactNode;
 }) {
   const gt = useGT();
   const { count, more, reset, select, authorCount, authorLabel, selectedLabelCount } =
     props.filters;
+  const m = useMessages();
   return (
     <ScrollView
       horizontal
@@ -428,12 +486,20 @@ export function PullRequestListFilters(props: {
           : ROW_STYLE
       }
     >
+      {props.savedViewsMenu}
       {Platform.OS === "android" ? null : (
         <ListFilterMenu
-          label={count ? String(count) : "Filters"}
+          label={count ? String(count) : gt("Filters")}
           icon
           active={count > 0}
-          accessibilityLabel={count ? `Filters, ${count} active` : "More filters"}
+          accessibilityLabel={
+            count
+              ? gt(
+                  "{count, plural, one {Filters, {count} active} other {Filters, {count} active}}",
+                  { count },
+                )
+              : gt("More filters")
+          }
           actions={[...more, reset(false)]}
           onSelect={select}
         />
@@ -441,29 +507,33 @@ export function PullRequestListFilters(props: {
       {props.filters.environmentLabel !== null ? (
         <ListFilterMenu
           label={props.filters.environmentLabel}
-          accessibilityLabel="Choose pull request environment"
+          accessibilityLabel={gt("Choose pull request environment")}
           actions={props.filters.environmentActions}
           onSelect={select}
         />
       ) : null}
       <ListFilterMenu
-        label={STATES[props.filters.state]}
+        label={m(STATES[props.filters.state])}
         active={props.filters.state !== "open"}
-        accessibilityLabel="Filter by state"
+        accessibilityLabel={gt("Filter by state")}
         actions={props.filters.stateActions}
         onSelect={select}
       />
       <ListFilterMenu
-        label={INVOLVEMENT[props.filters.involvement]}
+        label={m(INVOLVEMENT[props.filters.involvement])}
         active={props.filters.involvement !== "all"}
-        accessibilityLabel="Filter by involvement"
+        accessibilityLabel={gt("Filter by involvement")}
         actions={props.filters.involvementActions}
         onSelect={select}
       />
       <ListFilterMenu
-        label={selectedLabelCount ? `Labels ${selectedLabelCount}` : "Labels"}
+        label={
+          selectedLabelCount
+            ? gt("Labels {count}", { count: selectedLabelCount })
+            : gt("Labels", { $context: "filter menu" })
+        }
         active={selectedLabelCount > 0}
-        accessibilityLabel="Filter by label"
+        accessibilityLabel={gt("Filter by label")}
         actions={props.filters.labelActions}
         onSelect={select}
       />

@@ -1,13 +1,9 @@
-import type {
-  DiffFoldOverride,
-  FileDiffFoldChoices,
-} from "@t3tools/client-runtime/pull-request-diff-fold";
+import type { PullRequestDiffFolds } from "@t3tools/client-runtime/pull-request-diff-fold";
 import type { EnvironmentId, PullRequestRef, ScopedThreadRef } from "@t3tools/contracts";
 import { pullRequestReviewKey } from "./pullRequestReviewStore";
 
 interface PullRequestCodeViewOptions {
-  readonly foldChoices: FileDiffFoldChoices;
-  readonly foldOverride: DiffFoldOverride;
+  readonly folds: PullRequestDiffFolds;
 }
 
 export interface PullRequestCodeDisplayOptions {

@@ -175,12 +175,12 @@ export function PullRequestFilterSearchScreen({
             emptyDetail: gt("Search people by name or handle on the repositories' hosts."),
           }
         : {
-            title: "Filter by label",
-            placeholder: "Search labels",
-            close: "Close label filter",
-            clear: "Clear label search",
-            emptyTitle: "No matching labels",
-            emptyDetail: "Search the labels of the repositories this list covers.",
+            title: gt("Filter by label"),
+            placeholder: gt("Search labels"),
+            close: gt("Close label filter"),
+            clear: gt("Clear label search"),
+            emptyTitle: gt("No matching labels"),
+            emptyDetail: gt("Search the labels of the repositories this list covers."),
           };
   const failure = (
     <EmptyState

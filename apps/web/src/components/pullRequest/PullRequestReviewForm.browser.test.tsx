@@ -41,7 +41,7 @@ function renderForm(reference: PullRequestRef) {
       environmentId={EnvironmentId.make("test")}
       reference={reference}
       completionScope={null}
-      term="pull request"
+      term="pr"
       verdicts={["comment"]}
       requestChangesSummaryRequired={false}
       textareaRef={createRef()}

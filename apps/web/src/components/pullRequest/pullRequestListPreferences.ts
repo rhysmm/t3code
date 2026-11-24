@@ -24,7 +24,7 @@ export interface PullRequestListPreferences {
   readonly state: PullRequestListState;
   readonly environmentId?: EnvironmentId;
   readonly projectId?: ProjectId;
-  readonly host?: string;
+  readonly host?: string | undefined;
   readonly q?: string | undefined;
   readonly draft?: "only" | "hide";
   readonly review?: NonNullable<PullRequestListFilters["review"]>;
@@ -45,7 +45,7 @@ const DEFAULT_PULL_REQUEST_LIST_PREFERENCES = {
 } as const satisfies PullRequestListPreferences;
 
 const BoundedPreference = Schema.String.check(Schema.isMaxLength(200));
-const PullRequestListPreferencesSchema = Schema.Struct({
+export const PullRequestListPreferencesSchema = Schema.Struct({
   involvement: PullRequestInvolvement,
   state: PullRequestListState,
   environmentId: Schema.optional(EnvironmentId),
@@ -77,6 +77,8 @@ function resolvePreferenceStorage(
 export function pullRequestListPreferences(
   search: PullRequestListPreferences | Schema.Schema.Type<typeof PullRequestListPreferencesSchema>,
 ): PullRequestListPreferences {
+  const legacyAuthor = "author" in search ? search.author?.trim() : undefined;
+  const authors = search.authors ?? (legacyAuthor ? [legacyAuthor] : undefined);
   return {
     involvement: search.involvement,
     state: search.state,
@@ -87,7 +89,7 @@ export function pullRequestListPreferences(
     ...(search.draft ? { draft: search.draft } : {}),
     ...(search.review ? { review: search.review } : {}),
     ...(search.checks ? { checks: search.checks } : {}),
-    ...(search.authors && search.authors.length > 0 ? { authors: search.authors } : {}),
+    ...(authors && authors.length > 0 ? { authors } : {}),
     ...(search.authorTeam ? { authorTeam: search.authorTeam } : {}),
     ...(search.labels && search.labels.length > 0 ? { labels: search.labels } : {}),
     ...(search.sort && search.sort !== "ready" ? { sort: search.sort } : {}),
@@ -104,11 +106,7 @@ export function readPullRequestListPreferences(
     if (!raw) return DEFAULT_PULL_REQUEST_LIST_PREFERENCES;
     const decoded = decodePullRequestListPreferences(JSON.parse(raw));
     if (decoded._tag === "None") return DEFAULT_PULL_REQUEST_LIST_PREFERENCES;
-    const legacyAuthor = decoded.value.author?.trim();
-    return pullRequestListPreferences({
-      ...decoded.value,
-      authors: decoded.value.authors ?? (legacyAuthor ? [legacyAuthor] : undefined),
-    });
+    return pullRequestListPreferences(decoded.value);
   } catch {
     return DEFAULT_PULL_REQUEST_LIST_PREFERENCES;
   }

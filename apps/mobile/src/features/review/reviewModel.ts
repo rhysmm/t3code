@@ -14,12 +14,15 @@ import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Order from "effect/Order";
+import { msg } from "gt-react-native";
+
+import { m, type MessageResolver } from "../../i18n/messages";
 
 export type LiveReviewSectionKind = "working-tree" | "branch-range";
 export type ReviewSectionKind = "turn" | LiveReviewSectionKind;
 
-const CHANGES_TITLE = "Changes";
-const UNCOMMITTED_SUBTITLE = "Staged, unstaged, and untracked files";
+const CHANGES_TITLE = msg("Changes", { $context: "diff section: branch changes" });
+const UNCOMMITTED_SUBTITLE = msg("Staged, unstaged, and untracked files");
 
 export interface ReviewCheckout {
   readonly cwd: string;
@@ -122,16 +125,20 @@ export type ReviewParsedDiff =
       readonly notice: string | null;
     };
 
-function checkpointTitle(checkpoint: ThreadCheckpointSummary): string {
-  return `Turn ${checkpoint.checkpointTurnCount}`;
+function checkpointTitle(checkpoint: ThreadCheckpointSummary, resolve: MessageResolver): string {
+  return resolve(msg("Turn {count}", { count: checkpoint.checkpointTurnCount }));
 }
 
-function checkpointSubtitle(checkpoint: ThreadCheckpointSummary): string {
+function checkpointSubtitle(checkpoint: ThreadCheckpointSummary, resolve: MessageResolver): string {
   const fileCount = checkpointFileTotals(checkpoint).count;
   if (checkpoint.status !== "ready") {
-    return `Diff ${checkpoint.status}`;
+    return resolve(msg("Diff {status}", { status: checkpoint.status }));
   }
-  return `${fileCount} file${fileCount === 1 ? "" : "s"} changed`;
+  return resolve(
+    msg("{count, plural, one {{count} file changed} other {{count} files changed}}", {
+      count: fileCount,
+    }),
+  );
 }
 
 function compareCheckpointTurnCountDescending(
@@ -149,14 +156,14 @@ const readyCheckpointOrder = Order.make<ThreadCheckpointSummary>(
   compareCheckpointTurnCountDescending,
 );
 
-function gitSubtitle(section: ReviewDiffPreviewSource): string | null {
+function gitSubtitle(section: ReviewDiffPreviewSource, resolve: MessageResolver): string | null {
   if (section.kind === "working-tree") {
-    return UNCOMMITTED_SUBTITLE;
+    return resolve(UNCOMMITTED_SUBTITLE);
   }
   if (section.baseRef) {
     return `${section.baseRef} ... ${section.headRef ?? "HEAD"}`;
   }
-  return "Base branch unavailable";
+  return resolve(msg("Base branch unavailable"));
 }
 
 function stripTrailingNewline(value: string): string {
@@ -281,14 +288,17 @@ function countReviewRenderableCharacters(file: ReviewRenderableFile): number {
   );
 }
 
-export function getReviewFilePreviewState(file: ReviewRenderableFile): ReviewFilePreviewState {
+export function getReviewFilePreviewState(
+  file: ReviewRenderableFile,
+  resolve: MessageResolver = m,
+): ReviewFilePreviewState {
   const extension = getFileExtension(file.path);
   if (extension && NON_TEXT_FILE_EXTENSIONS.has(extension)) {
     return {
       kind: "suppressed",
       reason: "non-text",
-      title: "Non-text file",
-      message: "Diff preview is not available for this file format.",
+      title: resolve(msg("Non-text file")),
+      message: resolve(msg("Diff preview is not available for this file format.")),
       actionLabel: null,
     };
   }
@@ -299,9 +309,9 @@ export function getReviewFilePreviewState(file: ReviewRenderableFile): ReviewFil
     return {
       kind: "suppressed",
       reason: "large",
-      title: "Large diff",
-      message: "Large diffs are not rendered by default.",
-      actionLabel: "Load diff",
+      title: resolve(msg("Large diff")),
+      message: resolve(msg("Large diffs are not rendered by default.")),
+      actionLabel: resolve(msg("Load diff")),
     };
   }
 
@@ -537,15 +547,17 @@ export function buildReviewSectionItems(input: {
   readonly turnDiffById: Readonly<Record<string, string | undefined>>;
   readonly loadingGitSections: boolean;
   readonly checkoutPreview?: ReviewDiffPreviewInput;
+  readonly resolve?: MessageResolver;
 }): ReadonlyArray<ReviewSectionItem> {
+  const resolve = input.resolve ?? m;
   const turnItems = getReadyReviewCheckpoints(input.checkpoints).map<ReviewSectionItem>(
     (checkpoint) => {
       const id = getReviewSectionIdForCheckpoint(checkpoint);
       return {
         id,
         kind: "turn",
-        title: checkpointTitle(checkpoint),
-        subtitle: checkpointSubtitle(checkpoint),
+        title: checkpointTitle(checkpoint, resolve),
+        subtitle: checkpointSubtitle(checkpoint, resolve),
         diff: input.turnDiffById[id] ?? null,
         isLoading: false,
       };
@@ -557,7 +569,7 @@ export function buildReviewSectionItems(input: {
       (section): section is typeof section & { kind: LiveReviewSectionKind } =>
         section.kind !== "commit",
     )
-    .map((section) => buildReviewGitSectionItem(section, input.checkoutPreview));
+    .map((section) => buildReviewGitSectionItem(section, resolve, input.checkoutPreview));
   const changesId = getReviewGitSectionId("branch-range", input.checkoutPreview?.cwd);
   if (
     (input.loadingGitSections || input.checkoutPreview) &&
@@ -566,7 +578,7 @@ export function buildReviewSectionItems(input: {
     gitItems.unshift({
       id: changesId,
       kind: "branch-range",
-      title: CHANGES_TITLE,
+      title: resolve(CHANGES_TITLE),
       subtitle: null,
       diff: null,
       isLoading: input.loadingGitSections,
@@ -578,7 +590,7 @@ export function buildReviewSectionItems(input: {
       gitItems.push({
         id: workingTreeId,
         kind: "working-tree",
-        title: "Uncommitted",
+        title: resolve(msg("Uncommitted")),
         subtitle: null,
         diff: null,
         isLoading: input.loadingGitSections,
@@ -597,13 +609,14 @@ export function getReviewGitSectionId(kind: LiveReviewSectionKind, checkoutCwd?:
 
 function buildReviewGitSectionItem(
   section: ReviewDiffPreviewSource & { kind: LiveReviewSectionKind },
+  resolve: MessageResolver,
   previewInput?: ReviewDiffPreviewInput,
 ): ReviewSectionItem {
   return {
     id: getReviewGitSectionId(section.kind, previewInput?.cwd),
     kind: section.kind,
     title: section.title,
-    subtitle: gitSubtitle(section),
+    subtitle: gitSubtitle(section, resolve),
     diff: section.diff,
     source: section,
     ...(previewInput ? { previewInput } : {}),
@@ -636,6 +649,7 @@ export function resolveReviewSelectedSectionId(
 export function buildReviewParsedDiff(
   diff: string | null | undefined,
   cacheScope: string,
+  resolve: MessageResolver = m,
 ): ReviewParsedDiff {
   if (!diff?.trim()) {
     return { kind: "empty" };
@@ -647,7 +661,7 @@ export function buildReviewParsedDiff(
   }
 
   const notice = truncated
-    ? "Diff output hit the server size cap. Showing the available excerpt."
+    ? resolve(msg("Diff output hit the server size cap. Showing the available excerpt."))
     : null;
 
   try {
@@ -682,8 +696,12 @@ export function buildReviewParsedDiff(
         kind: "raw",
         text,
         reason: truncated
-          ? "Diff was truncated before it could be parsed completely. Showing the raw excerpt."
-          : "Unsupported diff format. Showing raw patch.",
+          ? resolve(
+              msg(
+                "Diff was truncated before it could be parsed completely. Showing the raw excerpt.",
+              ),
+            )
+          : resolve(msg("Unsupported diff format. Showing raw patch.")),
         notice,
       };
     }
@@ -701,8 +719,12 @@ export function buildReviewParsedDiff(
       kind: "raw",
       text,
       reason: truncated
-        ? "Diff was truncated before it could be parsed completely. Showing the raw excerpt."
-        : "Failed to parse patch. Showing raw patch.",
+        ? resolve(
+            msg(
+              "Diff was truncated before it could be parsed completely. Showing the raw excerpt.",
+            ),
+          )
+        : resolve(msg("Failed to parse patch. Showing raw patch.")),
       notice,
     };
   }
@@ -711,10 +733,17 @@ export function buildReviewParsedDiff(
 export function applyReviewDiffMetadata(
   previewDiff: ReviewParsedDiff,
   selectedSection: Pick<ReviewSectionItem, "files" | "truncated"> | null,
+  resolve: MessageResolver = m,
 ): ReviewParsedDiff {
   if (previewDiff.kind === "empty") return previewDiff;
   const notice = selectedSection?.truncated
-    ? `This preview exceeds the size limit. Changes shown are incomplete.${selectedSection.files ? " Counts include all changes." : ""}`
+    ? selectedSection.files
+      ? resolve(
+          msg(
+            "This preview exceeds the size limit. Changes shown are incomplete. Counts include all changes.",
+          ),
+        )
+      : resolve(msg("This preview exceeds the size limit. Changes shown are incomplete."))
     : previewDiff.notice;
   if (previewDiff.kind !== "files" || !selectedSection?.files) return { ...previewDiff, notice };
   const totals = selectedSection.files.reduce(

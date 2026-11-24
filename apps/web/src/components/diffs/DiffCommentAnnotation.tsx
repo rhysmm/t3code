@@ -1,4 +1,6 @@
 import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import { T, useGT, useMessages } from "gt-react";
+import { reviewCommentRangeText } from "~/lib/composerContextRecords";
 import { MessageCircle, Trash2 } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
@@ -57,15 +59,17 @@ export function DiffCommentAnnotation({
   onCancel,
   onComment,
   onDelete,
-  placeholder = "Add a comment…",
-  submitLabel = "Comment",
-  shortcutHint = "⌘/Ctrl Enter to send",
+  placeholder,
+  submitLabel,
+  shortcutHint,
   pending = false,
   secondaryAction,
   focusOnMount = true,
   onFocus,
   completionScope = null,
 }: DiffCommentAnnotationProps) {
+  const gt = useGT();
+  const messages = useMessages();
   const [localDraftText, setLocalDraftText] = useState("");
   const displayedText = kind === "draft" && !onTextChange ? localDraftText : text;
   const trimmedText = displayedText.trim();
@@ -100,7 +104,7 @@ export function DiffCommentAnnotation({
             <Button
               variant="ghost-muted"
               size="icon-xs"
-              aria-label="Delete comment"
+              aria-label={gt("Delete comment")}
               onClick={onDelete}
             >
               <Trash2 className="size-3" />
@@ -139,8 +143,10 @@ export function DiffCommentAnnotation({
         size="sm"
         value={displayedText}
         dir={textDirection(displayedText)}
-        placeholder={placeholder}
-        aria-label={`Comment on lines ${rangeLabel}`}
+        placeholder={placeholder ?? gt("Add a comment…")}
+        aria-label={gt("Comment on lines {rangeLabel}", {
+          rangeLabel: reviewCommentRangeText(rangeLabel, messages),
+        })}
         onValueChange={onTextChange ?? setLocalDraftText}
         onFocus={(event) => {
           const end = event.currentTarget.value.length;
@@ -160,10 +166,12 @@ export function DiffCommentAnnotation({
         }}
       />
       <div className="mt-1.5 flex flex-wrap items-center gap-1">
-        <span className="mr-auto text-3xs text-muted-foreground/70">{shortcutHint}</span>
+        <span className="mr-auto text-3xs text-muted-foreground/70">
+          {shortcutHint ?? <T>⌘/Ctrl Enter to send</T>}
+        </span>
         {speech ? <TextFieldSpeechControls speech={speech} disabled={pending} /> : null}
         <Button variant="ghost-muted" size="xs" onClick={onCancel}>
-          Cancel
+          <T>Cancel</T>
         </Button>
         {secondaryAction ? (
           <Button
@@ -185,7 +193,7 @@ export function DiffCommentAnnotation({
           disabled={speech?.preparing || pending || (!speech?.blocksSubmission && !trimmedText)}
           onClick={() => submit(speech, onComment)}
         >
-          {submitLabel}
+          {submitLabel ?? gt("Comment", { $context: "verb, submit button" })}
         </Button>
       </div>
     </div>

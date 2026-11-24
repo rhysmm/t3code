@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/filesystem";
 import { Atom } from "effect/reactivity";
+import { msg, useMessages } from "gt-react-native";
 
 import { deriveThreadCheckpointSummaries } from "@t3tools/client-runtime/state/thread-checkpoints";
 import type {
@@ -52,17 +53,21 @@ export function useReviewSections(input: {
   } | null;
 }) {
   const { alternate, environmentId, reviewCache, threadId } = input;
+  const messages = useMessages();
   const enabled = input.enabled ?? true;
   const fileAccessSession = useEnvironmentQuery(
     environmentId === undefined ? null : environmentSession.sessionStateAtom(environmentId),
   );
   const fileEnvironment = useEnvironmentPresentation(environmentId ?? null);
-  const fileAccess = resolveFilesystemReadAccess({
-    isCatalogReady: fileEnvironment.isReady,
-    connection: fileEnvironment.presentation?.connection ?? null,
-    session: fileAccessSession.data,
-    sessionError: fileAccessSession.error,
-  });
+  const fileAccess = resolveFilesystemReadAccess(
+    {
+      isCatalogReady: fileEnvironment.isReady,
+      connection: fileEnvironment.presentation?.connection ?? null,
+      session: fileAccessSession.data,
+      sessionError: fileAccessSession.error,
+    },
+    messages,
+  );
   const { canReadFiles } = fileAccess;
   const selectedThread = useSelectedThreadProjection();
   const { selectedThreadCwd } = useSelectedThreadWorktree();
@@ -111,6 +116,7 @@ export function useReviewSections(input: {
     turnDiffById: reviewTurnDiffsBySectionId(readyCheckpoints, lastTurnDiffs),
     loadingGitSections: fileAccess.isPending || diffPreview.isPending,
     ...(checkoutPreview && (canReadFiles || fileAccess.isPending) ? { checkoutPreview } : {}),
+    resolve: messages,
   });
   const selectedSectionId = alternate
     ? getReviewGitSectionId(alternate.kind, alternate.checkout.cwd)
@@ -170,7 +176,7 @@ export function useReviewSections(input: {
       diffPreview.error ??
       (alternate ? null : activeTurnDiff.error) ??
       (selectedSection === null && !fileAccess.isPending && !canReadFiles
-        ? (fileAccess.error ?? "This connection cannot read local diffs.")
+        ? (fileAccess.error ?? messages(msg("This connection cannot read local diffs.")))
         : null),
     isSelectedSectionPending:
       selectedSection?.kind === "turn" ? activeTurnDiff.isPending : diffPreview.isPending,
