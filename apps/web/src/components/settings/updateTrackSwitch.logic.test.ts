@@ -148,5 +148,6 @@ describe("localUpdaterStaysPut", () => {
     // Off for another reason too, such as T3CODE_DISABLE_AUTO_UPDATE or a .deb install.
     expect(localUpdaterStaysPut({ enabled: false }, "latest")).toBe(true);
     expect(localUpdaterStaysPut({ enabled: true }, "nightly")).toBe(false);
+    expect(localUpdaterStaysPut({ enabled: true, verifiedLocal: true }, "nightly")).toBe(true);
   });
 });

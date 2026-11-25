@@ -33,12 +33,19 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopSshEnvironment from "../ssh/DesktopSshEnvironment.ts";
 import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
+import {
+  readLocalAppCandidate,
+  stageLocalAppInstall,
+  supportsLocalAppUpdate,
+  type LocalAppCandidate,
+} from "./DesktopLocalAppUpdate.ts";
 import {
   normalizeDesktopUpdateReleaseNotes,
   releaseNotesOfOfferedVersion,
@@ -387,6 +394,7 @@ export const make = Effect.gen(function* () {
   const pool = yield* DesktopBackendPool.DesktopBackendPool;
   const sshEnvironment = yield* DesktopSshEnvironment.DesktopSshEnvironment;
   const desktopState = yield* DesktopState.DesktopState;
+  const electronApp = yield* ElectronApp.ElectronApp;
   const electronUpdater = yield* ElectronUpdater.ElectronUpdater;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -395,6 +403,13 @@ export const make = Effect.gen(function* () {
   const policy = yield* DesktopUpdatePolicy.DesktopUpdatePolicy;
   // Any user can set the mock flag, so it never replaces an administrator's update source.
   const mockUpdates = config.mockUpdates && policy.message === null;
+
+  const usesVerifiedLocalUpdates =
+    !mockUpdates &&
+    policy.message === null &&
+    !config.disableAutoUpdate &&
+    (yield* Effect.promise(() => supportsLocalAppUpdate(environment)));
+  const offeredLocalCandidate = yield* Ref.make<LocalAppCandidate | null>(null);
 
   const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
@@ -846,6 +861,88 @@ export const make = Effect.gen(function* () {
         }),
       })),
     );
+
+  const checkVerifiedLocalUpdate = Effect.fn("desktop.updates.checkVerifiedLocalUpdate")(
+    function* () {
+      const admitted = yield* tryStartUpdateAction("check");
+      if (!admitted) return { checked: false, state: yield* Ref.get(updateStateRef) };
+      return yield* Effect.gen(function* () {
+        const checkedAt = yield* currentIsoTimestamp;
+        const result = yield* Effect.tryPromise({
+          try: () => readLocalAppCandidate(environment),
+          catch: () => "Could not read the verified T3 Code Local update.",
+        }).pipe(Effect.result);
+        const candidate = result._tag === "Success" ? result.success : null;
+        yield* Ref.set(offeredLocalCandidate, candidate);
+        const next = {
+          ...(yield* baseUpdateState("latest", Option.none())),
+          verifiedLocal: true as const,
+        };
+        const state: DesktopUpdateState =
+          result._tag === "Failure"
+            ? reduceDesktopUpdateStateOnCheckFailure(next, result.failure, checkedAt)
+            : candidate === null
+              ? reduceDesktopUpdateStateOnNoUpdate(next, checkedAt)
+              : {
+                  ...next,
+                  status: "downloaded",
+                  checkedAt,
+                  availableVersion: candidate.version,
+                  downloadedVersion: candidate.version,
+                  downloadPercent: 100,
+                  localCandidateId: candidate.id,
+                };
+        const previous = yield* Ref.get(updateStateRef);
+        if (
+          previous.status !== state.status ||
+          previous.localCandidateId !== state.localCandidateId
+        ) {
+          yield* setState(state);
+        }
+        return { checked: result._tag === "Success", state: yield* Ref.get(updateStateRef) };
+      }).pipe(Effect.ensuring(finishUpdateAction("check")));
+    },
+  );
+
+  const installVerifiedLocalUpdate = Effect.fn("desktop.updates.installVerifiedLocalUpdate")(
+    function* (expectedCandidateId: string) {
+      const candidate = yield* Ref.get(offeredLocalCandidate);
+      if (
+        candidate === null ||
+        candidate.id !== expectedCandidateId ||
+        (yield* Ref.get(desktopState.quitting)) ||
+        !(yield* tryStartUpdateAction("install"))
+      ) {
+        return {
+          accepted: false,
+          completed: false,
+          failed: false,
+          state: yield* Ref.get(updateStateRef),
+        };
+      }
+      return yield* Effect.gen(function* () {
+        const result = yield* Effect.tryPromise({
+          try: () => stageLocalAppInstall(environment, candidate),
+          catch: (cause) =>
+            cause instanceof Error ? cause.message : "Could not prepare the update.",
+        }).pipe(Effect.result);
+        if (result._tag === "Failure") {
+          const state = yield* updateState((previous) =>
+            reduceDesktopUpdateStateOnInstallFailure(previous, result.failure),
+          );
+          return { accepted: true, completed: false, failed: true, state };
+        }
+        yield* Ref.set(desktopState.quitting, true);
+        yield* electronApp.quit;
+        return {
+          accepted: true,
+          completed: false,
+          failed: false,
+          state: yield* Ref.get(updateStateRef),
+        };
+      }).pipe(Effect.ensuring(finishUpdateAction("install")));
+    },
+  );
 
   const resetInstallAction = Effect.all(
     [
@@ -1314,9 +1411,11 @@ export const make = Effect.gen(function* () {
       }),
     ),
     emitState,
-    disabledReason: Ref.get(updateStateRef).pipe(
-      Effect.flatMap((state) => resolveStateDisabledReason(state.channel)),
-    ),
+    disabledReason: usesVerifiedLocalUpdates
+      ? Effect.succeedNone
+      : Ref.get(updateStateRef).pipe(
+          Effect.flatMap((state) => resolveStateDisabledReason(state.channel)),
+        ),
     configure: Effect.gen(function* () {
       const context = yield* Effect.context<never>();
       // Runs synchronously up to the first await, so a check's outcome is applied before the
@@ -1324,6 +1423,16 @@ export const make = Effect.gen(function* () {
       const runEffect = (effect: Effect.Effect<void>) => {
         void Effect.runPromiseWith(context)(effect);
       };
+
+      if (usesVerifiedLocalUpdates) {
+        yield* checkVerifiedLocalUpdate();
+        yield* Effect.sleep("30 seconds").pipe(
+          Effect.andThen(checkVerifiedLocalUpdate()),
+          Effect.forever,
+          Effect.forkScoped,
+        );
+        return;
+      }
 
       const appUpdateYmlConfig = yield* readAppUpdateYml;
       yield* Ref.set(appUpdateYmlConfigRef, appUpdateYmlConfig);
@@ -1408,6 +1517,7 @@ export const make = Effect.gen(function* () {
       options?: { readonly minimumVersion?: string | undefined },
     ) {
       yield* Effect.annotateCurrentSpan({ channel: nextChannel });
+      if (usesVerifiedLocalUpdates) return yield* Ref.get(updateStateRef);
       if (Option.isSome(channelBlockedReason(nextChannel))) {
         return yield* new DesktopUpdateChannelManagedError({
           channel: nextChannel,
@@ -1475,6 +1585,12 @@ export const make = Effect.gen(function* () {
       options?: { readonly allowDowngrade?: boolean },
     ) {
       yield* Effect.annotateCurrentSpan({ reason });
+      if (usesVerifiedLocalUpdates) {
+        if (reason === "remote-update") {
+          return { checked: false, state: yield* Ref.get(updateStateRef) };
+        }
+        return yield* checkVerifiedLocalUpdate();
+      }
       if (!(yield* Ref.get(updaterConfiguredRef))) {
         return {
           checked: false,
@@ -1499,7 +1615,9 @@ export const make = Effect.gen(function* () {
       Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
     ),
     installPrepared: Effect.fn("DesktopUpdates.installPrepared")(function (expectedVersion) {
-      return installWithExpectedVersion(expectedVersion);
+      return usesVerifiedLocalUpdates
+        ? installVerifiedLocalUpdate(expectedVersion)
+        : installWithExpectedVersion(expectedVersion);
     }),
   });
 });

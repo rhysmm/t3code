@@ -98,7 +98,8 @@ function SwitchPlan({
   const m = useMessages();
   const updateState = useDesktopUpdateState();
   const { environments } = useEnvironments();
-  const crossesLocal = desktopUpdateChannelOf(APP_VERSION) !== release.channel;
+  const verifiedLocal = updateState?.verifiedLocal === true;
+  const crossesLocal = !verifiedLocal && desktopUpdateChannelOf(APP_VERSION) !== release.channel;
   const updatesOff = localUpdaterStaysPut(updateState, release.channel);
   // After a partial switch this app may already be on the track; then only remotes move.
   const switchesLocal = crossesLocal && !updatesOff;
@@ -109,7 +110,7 @@ function SwitchPlan({
     {
       label,
       channel: release.channel,
-      savedChannel: updateState?.channel ?? null,
+      savedChannel: verifiedLocal ? release.channel : (updateState?.channel ?? null),
       switchesLocal,
       crossesLocal,
       rows: everything.rows,
@@ -143,11 +144,13 @@ function SwitchPlan({
           description,
         }),
       );
-    const prepared = await prepareLocalTrackSwitch(bridge, {
-      channel: release.channel,
-      version: release.version,
-      reinstall: switchesLocal,
-    });
+    const prepared = verifiedLocal
+      ? { ok: true as const, local: null }
+      : await prepareLocalTrackSwitch(bridge, {
+          channel: release.channel,
+          version: release.version,
+          reinstall: switchesLocal,
+        });
     onClose();
     if (!prepared.ok) {
       fail(prepared.message);

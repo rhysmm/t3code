@@ -244,7 +244,12 @@ export const listen: Effect.Effect<
     switch (action) {
       case "update": {
         if (current._tag !== "Update") return;
-        let { downloadedVersion } = yield* updates.getState;
+        const state = yield* updates.getState;
+        if (state.localCandidateId !== undefined) {
+          yield* updates.installPrepared(state.localCandidateId);
+          return;
+        }
+        let { downloadedVersion } = state;
         if (downloadedVersion === null) {
           // The download re-checks first, so it can fetch a newer build than the one offered.
           const download = yield* updates.download;

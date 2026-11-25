@@ -103,14 +103,18 @@ export function nothingToMove(
 }
 
 /**
- * Whether this app stays put while connected machines move: its updater is off, as for a .deb
- * install or without a feed. Off only because a policy rules out its nightly channel, it moves.
+ * A verified Local build stays on Stable while connected machines switch tracks.
+ * An updater disabled by policy can still switch back to Stable.
  */
 export function localUpdaterStaysPut(
-  state: Pick<DesktopUpdateState, "enabled" | "channelBlockedByPolicy"> | null | undefined,
+  state:
+    | Pick<DesktopUpdateState, "enabled" | "channelBlockedByPolicy" | "verifiedLocal">
+    | null
+    | undefined,
   target: DesktopUpdateChannel,
 ): boolean {
   return (
-    state?.enabled === false && !(target === "latest" && state.channelBlockedByPolicy === true)
+    state?.verifiedLocal === true ||
+    (state?.enabled === false && !(target === "latest" && state.channelBlockedByPolicy === true))
   );
 }

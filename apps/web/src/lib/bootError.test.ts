@@ -128,6 +128,10 @@ describe("updateActionFor", () => {
       percent: 42,
     });
     expect(updateActionFor(state("downloaded"))).toEqual({ kind: "install" });
+    expect(updateActionFor({ ...state("downloaded"), localCandidateId: "verified" })).toEqual({
+      kind: "install",
+      candidateId: "verified",
+    });
     for (const status of ["disabled", "idle", "checking", "up-to-date", "error"] as const) {
       expect(updateActionFor(state(status))).toBeNull();
     }

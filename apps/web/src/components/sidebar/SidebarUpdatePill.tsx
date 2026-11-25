@@ -239,9 +239,10 @@ function SidebarUpdateControl() {
   const isDownloading = state?.status === "downloading";
   const localUpdateVersion =
     state && action !== "none" ? getDesktopUpdateDownloadedVersion(state) : null;
-  const everything = useUpdateEverything(localUpdateVersion);
+  const isVerifiedLocalCandidate = state?.localCandidateId !== undefined;
+  const everything = useUpdateEverything(isVerifiedLocalCandidate ? null : localUpdateVersion);
   const checkProviderUpdates = useCheckProviderUpdates();
-  const runsEverything = everything.hasUpdates && !isDownloading;
+  const runsEverything = everything.hasUpdates && !isDownloading && !isVerifiedLocalCandidate;
   const run = useUpdateEverythingRun();
   const isRunningEverything = run !== null;
   const showCheckIcon = shouldShowDesktopUpdateCheckIcon({
@@ -334,7 +335,9 @@ function SidebarUpdateControl() {
         setIsActionPending(false);
         return;
       }
-      void installLocalUpdate(bridge).finally(() => setIsActionPending(false));
+      void installLocalUpdate(bridge, toastUpdateError, state.localCandidateId).finally(() =>
+        setIsActionPending(false),
+      );
       return;
     }
 
@@ -383,7 +386,7 @@ function SidebarUpdateControl() {
                 downloadLocalUpdate(bridge, { notifyDownloaded: false, reportError }),
             }
           : {}),
-        ...(bridge && action !== "none"
+        ...(bridge && action !== "none" && !isVerifiedLocalCandidate
           ? { installLocal: (reportError) => installLocalUpdate(bridge, reportError) }
           : {}),
       }),
@@ -458,7 +461,13 @@ function SidebarUpdateControl() {
                     failures: [],
                     restarting: [],
                   });
-                  if (!(await installLocalUpdate(window.desktopBridge!))) {
+                  if (
+                    !(await installLocalUpdate(
+                      window.desktopBridge!,
+                      toastUpdateError,
+                      state?.localCandidateId,
+                    ))
+                  ) {
                     clearSavedUpdateEverythingResult();
                   }
                 },

@@ -12996,5 +12996,8 @@
   "201490988858b511": "retirada por {by}",
   "99451a5d2d40440f": "Retirada por {by}.",
   "3ee30a50b70fffab": "Retirada por {by}: {reason}",
-  "92e129bf413a1220": "retirada"
+  "92e129bf413a1220": "retirada",
+  "f770b05803978529": "Reinicie o T3 Code Local para instalar {version}",
+  "aecf9c6f5d888b44": "Instalar a atualização {version} e reiniciar o T3 Code Local?",
+  "a03cd747aa50a225": "Altera o canal de atualização das máquinas conectadas."
 }

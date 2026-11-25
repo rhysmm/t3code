@@ -287,6 +287,8 @@ export interface DesktopUpdateState {
   runningUnderArm64Translation: boolean;
   availableVersion: string | null;
   downloadedVersion: string | null;
+  verifiedLocal?: true;
+  localCandidateId?: string;
   releaseNotes: ReadonlyArray<DesktopUpdateReleaseNote>;
   omittedReleaseCount: number;
   downloadPercent: number | null;
@@ -334,6 +336,8 @@ export const DesktopUpdateStateSchema = Schema.Struct({
   runningUnderArm64Translation: Schema.Boolean,
   availableVersion: Schema.NullOr(Schema.String),
   downloadedVersion: Schema.NullOr(Schema.String),
+  verifiedLocal: Schema.optionalKey(Schema.Literal(true)),
+  localCandidateId: Schema.optionalKey(Schema.String),
   releaseNotes: Schema.Array(DesktopUpdateReleaseNoteSchema),
   omittedReleaseCount: Schema.Number,
   downloadPercent: Schema.NullOr(Schema.Number),

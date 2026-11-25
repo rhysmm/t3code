@@ -129,12 +129,34 @@ const checkForUpdatesFromMenu = Effect.gen(function* () {
         version === null
           ? m(msg("A new version of T3 Code is ready to install."))
           : m(msg("T3 Code {version} is ready to install."), { version }),
-      detail: m(msg("T3 Code will restart to install it. Any running tasks will be interrupted.")),
+      ...(updateState.localCandidateId === undefined
+        ? {
+            detail: m(
+              msg("T3 Code will restart to install it. Any running tasks will be interrupted."),
+            ),
+          }
+        : {}),
       buttons: [m(msg("Restart", { $context: "button, restarts the app" })), m(msg("Later"))],
       defaultId: 0,
       cancelId: 1,
     });
-    if (response === 0) yield* updates.install;
+    if (response === 0) {
+      if (updateState.localCandidateId === undefined) {
+        yield* updates.install;
+      } else {
+        const installed = yield* updates.installPrepared(updateState.localCandidateId);
+        if (!installed.accepted || installed.failed) {
+          yield* electronDialog.showMessageBox({
+            type: "warning",
+            message: m(msg("Could not install update")),
+            detail:
+              installed.state.message ??
+              m(msg("An unknown error occurred. Please try again later.")),
+            buttons: [m(msg("OK"))],
+          });
+        }
+      }
+    }
   } else if (updateState.status === "error") {
     yield* electronDialog.showMessageBox({
       type: "warning",

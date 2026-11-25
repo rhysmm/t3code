@@ -152,6 +152,9 @@ export function getDesktopUpdateButtonTooltip(
       );
     }
     const version = state.downloadedVersion ?? state.availableVersion;
+    if (state.localCandidateId !== undefined && version !== null) {
+      return resolve(msg("Restart T3 Code Local to install {version}", { version }));
+    }
     return version === null
       ? resolve(msg("Update ready downloaded. Click to restart and install."))
       : resolve(msg("Update {version} downloaded. Click to restart and install.", { version }));
@@ -196,10 +199,13 @@ export function getDesktopUpdateButtonTooltip(
 }
 
 export function getDesktopUpdateInstallConfirmationMessage(
-  state: Pick<DesktopUpdateState, "availableVersion" | "downloadedVersion">,
+  state: Pick<DesktopUpdateState, "availableVersion" | "downloadedVersion" | "localCandidateId">,
   resolve: MessageResolver = m,
 ): string {
   const version = state.downloadedVersion ?? state.availableVersion;
+  if (state.localCandidateId !== undefined && version !== null) {
+    return resolve(msg("Install update {version} and restart T3 Code Local?", { version }));
+  }
   return version
     ? resolve(
         msg(

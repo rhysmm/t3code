@@ -13005,5 +13005,8 @@
   "201490988858b511": "withdrawn by {by}",
   "99451a5d2d40440f": "Withdrawn by {by}.",
   "3ee30a50b70fffab": "Withdrawn by {by}: {reason}",
-  "92e129bf413a1220": "withdrawn"
+  "92e129bf413a1220": "withdrawn",
+  "f770b05803978529": "Restart T3 Code Local to install {version}",
+  "aecf9c6f5d888b44": "Install update {version} and restart T3 Code Local?",
+  "a03cd747aa50a225": "Switches the update track for connected machines."
 }

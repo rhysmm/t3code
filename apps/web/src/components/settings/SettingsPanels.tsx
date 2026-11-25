@@ -201,7 +201,9 @@ function AboutVersionSection() {
   // A switch that failed part way leaves this app or a server on the other track.
   // With its updater off, a switch cannot move this app, so it is not counted.
   const appOffTrack =
-    updateState?.enabled !== false && desktopUpdateChannelOf(APP_VERSION) !== selectedUpdateChannel;
+    updateState?.enabled !== false &&
+    updateState?.verifiedLocal !== true &&
+    desktopUpdateChannelOf(APP_VERSION) !== selectedUpdateChannel;
   const unswitchedMachines =
     (appOffTrack ? 1 : 0) +
     environments.filter(
@@ -257,7 +259,7 @@ function AboutVersionSection() {
         setIsUpdateActionPending(false);
         return;
       }
-      void installDesktopUpdate(bridge)
+      void installDesktopUpdate(bridge, updateState?.localCandidateId)
         .then((result) => {
           const actionError = getDesktopUpdateActionError(result);
           if (!actionError) return;
@@ -401,6 +403,8 @@ function AboutVersionSection() {
                   <T>Review</T>
                 </Button>
               </>
+            ) : updateState?.verifiedLocal === true ? (
+              gt("Switches the update track for connected machines.")
             ) : (
               gt(
                 "Switches this app and every connected machine whose database the target release supports.",
