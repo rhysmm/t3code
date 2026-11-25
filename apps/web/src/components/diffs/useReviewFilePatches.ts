@@ -204,10 +204,12 @@ function reviewFileQueries({
                     : {}),
                   ...(baseRef ? { baseRef } : {}),
                   ...(source.kind === "commit" ? { commitSha: source.id } : {}),
+                  ...(source.mergeBase ? { mergeBase: source.mergeBase } : {}),
                   ignoreWhitespace,
                   file: {
                     path: file.path,
                     previousPath: file.previousPath,
+                    ...(file.changeType ? { changeType: file.changeType } : {}),
                     sourceKind: source.kind,
                   },
                 },

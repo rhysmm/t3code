@@ -63,23 +63,28 @@ export function PullRequestReviewForm({
   environmentId,
   active,
   reference,
+  headSha,
   completionScope,
   term,
   verdicts,
   requestChangesSummaryRequired,
   textareaRef,
   onSubmitted,
+  onRefused,
 }: {
   environmentId: EnvironmentId;
   /** False while the form stays mounted but hidden; dictation is cancelled then. */
   active: boolean;
   reference: PullRequestRef;
+  /** The head on screen, which the review is pinned to. */
+  headSha: string | undefined;
   completionScope: PullRequestCompletionScope | null;
   term: ChangeRequestTermKind;
   verdicts: ReadonlyArray<PullRequestReviewVerdict>;
   requestChangesSummaryRequired: boolean;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onSubmitted: () => void;
+  onRefused: () => void;
 }) {
   const gt = useGT();
   const resolve = useMessages();
@@ -127,6 +132,7 @@ export function PullRequestReviewForm({
         environmentId,
         input: {
           ...reference,
+          ...(headSha === undefined ? {} : { expectedHeadSha: headSha }),
           verdict: verdict.value,
           body: text,
           comments: submittedComments,
@@ -141,6 +147,7 @@ export function PullRequestReviewForm({
             m(msg("The host refused the review. Your draft is still here to try again.")),
           ),
         });
+        onRefused();
         return;
       }
       // Preserve new comments and summary edits made during submission.

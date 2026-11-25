@@ -82,4 +82,14 @@ describe("pull requests route search", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("cuts a long author and label before an emoji the limit would split", () => {
+    const author = "a".repeat(199);
+    const label = "b".repeat(199);
+    expect(
+      matchedSearch(
+        `/pull-requests?${new URLSearchParams({ author: `${author}😀`, labels: `${label}🐛` })}`,
+      ),
+    ).toMatchObject({ authors: [author], labels: [label] });
+  });
 });

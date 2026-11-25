@@ -24,10 +24,17 @@ export const reviewEnvironment = createReviewEnvironmentAtoms(connectionAtomRunt
   onDiffPreviewAnswer: (target, value, registry) =>
     target.input.checkoutProjectId
       ? Effect.void
-      : Effect.sync(() =>
+      : Effect.sync(() => {
+          const atom = lastReviewGitSectionsAtom(target.environmentId, target.input.cwd);
+          const kind = target.input.sourceKind;
           registry.set(
-            lastReviewGitSectionsAtom(target.environmentId, target.input.cwd),
-            value.sources,
-          ),
-        ),
+            atom,
+            kind === undefined
+              ? value.sources
+              : [
+                  ...registry.get(atom).filter((source) => source.kind !== kind),
+                  ...value.sources.filter((source) => source.kind === kind),
+                ],
+          );
+        }),
 });

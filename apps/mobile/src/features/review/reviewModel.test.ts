@@ -1,3 +1,5 @@
+import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
+import { CheckpointRef, CheckpointScopeId, RunId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -5,7 +7,9 @@ import {
   buildReviewParsedDiff,
   buildReviewSectionItems,
   getReviewGitSectionId,
+  filterReviewParsedDiffToFolder,
   resolveReviewSelectedSectionId,
+  type ReviewRenderableFile,
   type ReviewSectionItem,
 } from "./reviewModel";
 
@@ -39,7 +43,7 @@ describe("resolveReviewSelectedSectionId", () => {
       checkpoints: [],
       gitSections: [],
       turnDiffById: {},
-      loadingGitSections: true,
+      gitSectionStates: { "working-tree": "loading", "branch-range": "loading" },
       checkoutPreview: { cwd },
     });
 
@@ -49,6 +53,83 @@ describe("resolveReviewSelectedSectionId", () => {
     );
     expect(resolveReviewSelectedSectionId(sections, workingTreeId)).toBe(workingTreeId);
     expect(workingTreeId).not.toBe(getReviewGitSectionId("working-tree", "/repo"));
+  });
+});
+
+describe("buildReviewSectionItems", () => {
+  const checkpoint = (turn: number, repositories?: ThreadCheckpointSummary["repositories"]) =>
+    ({
+      runId: RunId.make(`run-${turn}`),
+      checkpointTurnCount: turn,
+      checkpointRef: CheckpointRef.make(`ref-${turn}`),
+      status: "missing",
+      files: [],
+      ...(repositories === undefined ? {} : { repositories }),
+      assistantMessageId: null,
+      completedAt: "2026-11-10T00:00:00.000Z",
+    }) satisfies ThreadCheckpointSummary;
+  const repository = (name: string, paths: ReadonlyArray<string>) => ({
+    scopeId: CheckpointScopeId.make(`scope-${name}`),
+    name,
+    repositoryPath: `/work/${name}`,
+    cwd: `/work/${name}`,
+    relativePath: name,
+    files: paths.map((path) => ({ path, kind: "modified", additions: 2, deletions: 1 })),
+    baselineMissing: paths.length === 0,
+  });
+
+  it("offers a plain folder's turns that changed its repositories", () => {
+    const sections = buildReviewSectionItems({
+      checkpoints: [
+        checkpoint(1),
+        checkpoint(2, [repository("api", ["a.ts", "b.ts"]), repository("web", ["a.ts"])]),
+        checkpoint(3, [repository("api", ["a.ts"]), repository("web", [])]),
+      ],
+      gitSections: [],
+      turnDiffById: {},
+      gitSectionStates: { "working-tree": null, "branch-range": null },
+    });
+
+    expect(sections).toMatchObject([
+      { id: "turn:3", subtitle: "1 file changed · api, web", unlistedRepositories: ["web"] },
+      {
+        id: "turn:2",
+        subtitle: "3 files changed · api, web",
+        repositoryGroups: [
+          { key: "/work/api", name: "api", relativePath: "api" },
+          { key: "/work/web", name: "web", relativePath: "web" },
+        ],
+      },
+    ]);
+    expect(sections[0]).not.toHaveProperty("repositoryGroups");
+  });
+});
+
+describe("filterReviewParsedDiffToFolder", () => {
+  it("keeps the files of one folder, giving a nested repository its own", () => {
+    const file = (path: string) => ({ path, additions: 2, deletions: 1 }) as ReviewRenderableFile;
+    const parsed = {
+      kind: "files" as const,
+      files: ["README.md", "api/src/a.ts", "api/vendor/lib/a.ts", "apiary/a.ts"].map(file),
+      fileCount: 4,
+      additions: 8,
+      deletions: 4,
+      notice: null,
+    };
+    const folders = ["", "api", "api/vendor/lib"];
+    const paths = (folder: string) => {
+      const filtered = filterReviewParsedDiffToFolder(parsed, folder, folders);
+      return filtered.kind === "files" ? filtered.files.map((entry) => entry.path) : null;
+    };
+
+    expect(paths("")).toEqual(["README.md", "apiary/a.ts"]);
+    expect(paths("api/vendor/lib")).toEqual(["api/vendor/lib/a.ts"]);
+    expect(filterReviewParsedDiffToFolder(parsed, "api", folders)).toMatchObject({
+      files: [{ path: "api/src/a.ts" }],
+      fileCount: 1,
+      additions: 2,
+      deletions: 1,
+    });
   });
 });
 
@@ -291,6 +372,44 @@ describe("buildReviewParsedDiff", () => {
       kind: "hunk",
       header: "@@ -1,1 +1,2 @@",
     });
+  });
+});
+
+describe("buildReviewSectionItems", () => {
+  it("keeps a failed or loading git source selectable beside the other one", () => {
+    const source = (kind: "working-tree" | "branch-range") => ({
+      id: kind,
+      kind,
+      title: kind === "working-tree" ? "Uncommitted" : "Changes",
+      baseRef: "HEAD",
+      headRef: null,
+      diff: "diff --git a/a.ts b/a.ts\n",
+      diffHash: "hash",
+      truncated: false,
+    });
+    const build = (
+      gitSections: ReadonlyArray<ReturnType<typeof source>>,
+      gitSectionStates: Parameters<typeof buildReviewSectionItems>[0]["gitSectionStates"],
+    ) =>
+      buildReviewSectionItems({
+        checkpoints: [],
+        gitSections,
+        turnDiffById: {},
+        gitSectionStates,
+      }).map((section) => [section.id, section.diff === null, section.isLoading]);
+
+    expect(
+      build([source("working-tree")], { "working-tree": null, "branch-range": "failed" }),
+    ).toEqual([
+      ["git:working-tree", false, false],
+      ["git:branch-range", true, false],
+    ]);
+    expect(
+      build([source("branch-range")], { "working-tree": "loading", "branch-range": null }),
+    ).toEqual([
+      ["git:working-tree", true, true],
+      ["git:branch-range", false, false],
+    ]);
   });
 });
 
