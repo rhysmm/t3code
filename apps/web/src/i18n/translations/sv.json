@@ -13006,5 +13006,7 @@
   "92e129bf413a1220": "återkallad",
   "f770b05803978529": "Starta om T3 Code Local för att installera {version}",
   "aecf9c6f5d888b44": "Installera uppdatering {version} och starta om T3 Code Local?",
-  "a03cd747aa50a225": "Byter uppdateringskanal för anslutna datorer."
+  "a03cd747aa50a225": "Byter uppdateringskanal för anslutna datorer.",
+  "c7a5f31a93fa6c98": "Kassera osparade filändringar?",
+  "6e350917d09a0535": "Filen ändrades på disken. Dina ändringar finns kvar här."
 }

@@ -12999,5 +12999,7 @@
   "92e129bf413a1220": "retirada",
   "f770b05803978529": "Reinicie o T3 Code Local para instalar {version}",
   "aecf9c6f5d888b44": "Instalar a atualização {version} e reiniciar o T3 Code Local?",
-  "a03cd747aa50a225": "Altera o canal de atualização das máquinas conectadas."
+  "a03cd747aa50a225": "Altera o canal de atualização das máquinas conectadas.",
+  "c7a5f31a93fa6c98": "Descartar as alterações não salvas no arquivo?",
+  "6e350917d09a0535": "O arquivo foi alterado no disco. Suas edições ainda estão aqui."
 }

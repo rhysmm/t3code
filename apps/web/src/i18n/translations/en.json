@@ -13008,5 +13008,7 @@
   "92e129bf413a1220": "withdrawn",
   "f770b05803978529": "Restart T3 Code Local to install {version}",
   "aecf9c6f5d888b44": "Install update {version} and restart T3 Code Local?",
-  "a03cd747aa50a225": "Switches the update track for connected machines."
+  "a03cd747aa50a225": "Switches the update track for connected machines.",
+  "c7a5f31a93fa6c98": "Discard unsaved file changes?",
+  "6e350917d09a0535": "The file changed on disk. Your edits are still here."
 }

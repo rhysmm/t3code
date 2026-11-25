@@ -1,3 +1,5 @@
+export const OPEN_LOCAL_TEXT_FILE_CHANNEL = "desktop:open-local-text-file";
+export const SAVE_LOCAL_TEXT_FILE_CHANNEL = "desktop:save-local-text-file";
 export const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 export const TO_LOCAL_BACKEND_PATH_CHANNEL = "desktop:to-local-backend-path";
 export const SET_NOTIFICATION_BADGE_CHANNEL = "desktop:set-notification-badge";

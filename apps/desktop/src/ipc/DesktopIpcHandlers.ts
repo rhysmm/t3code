@@ -1,3 +1,4 @@
+import { installLocalTextFileHandlers } from "./methods/localTextFile.ts";
 import { startFileDrag } from "./methods/fileDrag.ts";
 import * as Effect from "effect/Effect";
 
@@ -156,6 +157,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setWslDistro);
   yield* ipc.handle(setWslOnly);
 
+  yield* installLocalTextFileHandlers();
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(toLocalBackendPath);
   yield* ipc.handle(pickProjectFavicon);

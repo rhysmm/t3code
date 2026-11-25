@@ -1,8 +1,17 @@
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { DownloadIcon, CopyIcon, CheckIcon, Code2Icon, EyeIcon, Table2Icon } from "lucide-react";
+import {
+  DownloadIcon,
+  CopyIcon,
+  CheckIcon,
+  Code2Icon,
+  EyeIcon,
+  SaveIcon,
+  Table2Icon,
+} from "lucide-react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { m, type MessageResolver } from "~/i18n/messages";
 import { namedClipboardTarget, useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
 import {
   type AssetResource,
@@ -67,7 +76,7 @@ import { OpenInPicker } from "~/components/chat/OpenInPicker";
 import { fileManagerActionForPath } from "~/components/chat/OpenInPicker.logic";
 import { MediaVideoPlayer } from "~/components/media/MediaVideoPlayer";
 import { MediaActions, type MediaActionSource } from "~/components/media/MediaActions";
-import { useRemoteOpenState } from "~/remoteOpen";
+import { useRemoteOpenResolution } from "~/remoteOpen";
 import { useClientSettings } from "~/hooks/useSettings";
 import { useTheme } from "~/hooks/useTheme";
 import { useStableCallback } from "~/hooks/useStableCallback";
@@ -75,6 +84,7 @@ import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "~/hoo
 import { resolveDiffThemeName } from "~/lib/diffRendering";
 import { PREFERRED_HIGHLIGHTER } from "~/lib/syntaxHighlighting";
 import { cn, isMacPlatform } from "~/lib/utils";
+import { ensureLocalApi } from "~/localApi";
 import { requestWorkspaceFocus } from "~/lib/workspaceFocus";
 import type { ChatFileAttachment } from "~/types";
 import { isHostPath } from "@t3tools/shared/path";
@@ -138,10 +148,10 @@ import {
 } from "./filePreviewMode";
 import { setMarkdownTaskChecked } from "@t3tools/shared/markdownTaskEdits";
 import { changeFileSaveSession, useFileSaveSession } from "./fileSaveSessions";
+import { getLocalTextFileBridge, useLocalTextFile } from "./useLocalTextFile";
 import { revisionedQuery } from "~/state/revisionedQuery";
 import {
   getOptimisticProjectFileQueryData,
-  getProjectFileContents,
   getProjectFileQueryAtom,
   setProjectFileQueryData,
   useProjectFileQuery,
@@ -856,8 +866,28 @@ interface EditableFileSurfaceProps {
   revealRequestId: number;
   wordWrap: boolean;
   onPostRender: FilePostRender;
-  onPendingChange: (relativePath: string, pending: boolean) => void;
+  onContentsChange: (contents: string) => void;
   onEditorChange: (editor: FileEditor | null) => void;
+}
+
+function WorkspaceEditableFileSurface({
+  onPendingChange,
+  ...props
+}: Omit<EditableFileSurfaceProps, "onContentsChange"> & {
+  onPendingChange: (relativePath: string, pending: boolean) => void;
+}) {
+  const { environmentId, cwd, relativePath } = props;
+  const saveTarget = { environmentId, cwd, relativePath };
+  useFileSaveSession(saveTarget, onPendingChange);
+  return (
+    <EditableFileSurface
+      {...props}
+      onContentsChange={(contents) => {
+        setProjectFileQueryData(environmentId, cwd, relativePath, contents);
+        changeFileSaveSession(saveTarget, contents);
+      }}
+    />
+  );
 }
 
 interface FileSelectionOverride {
@@ -876,7 +906,7 @@ function EditableFileSurface({
   revealRequestId,
   wordWrap,
   onPostRender,
-  onPendingChange,
+  onContentsChange,
   onEditorChange,
 }: EditableFileSurfaceProps) {
   const messages = useMessages();
@@ -897,8 +927,6 @@ function EditableFileSurface({
   };
   const surfaceRef = useRef<HTMLDivElement>(null);
   const selectionFrameRef = useRef<number | null>(null);
-  const saveTarget = { environmentId, cwd, relativePath };
-  useFileSaveSession(saveTarget, onPendingChange);
   // Retain file identity for echoed editor changes; only external changes replace the editor's draft.
   const [externalFile, setExternalFile] = useState(() =>
     editableFileContents(environmentId, cwd, relativePath, contents),
@@ -926,10 +954,9 @@ function EditableFileSurface({
     file,
     lineAnnotations: nextLineAnnotations,
   }: EditorChangeEvent<"file", FileCommentAnnotationGroup, undefined>) => {
-    if (file.contents === getProjectFileContents(environmentId, cwd, relativePath)) return;
+    if (file.contents === (editedContents ?? externalFile.contents)) return;
     setEditedContents(file.contents);
-    setProjectFileQueryData(environmentId, cwd, relativePath, file.contents);
-    changeFileSaveSession(saveTarget, file.contents);
+    onContentsChange(file.contents);
     if (!nextLineAnnotations) return;
     const remapped = remapFileCommentAnnotations(nextLineAnnotations);
     // The editor hands back the array it was given until an edit moves an annotation.
@@ -1178,10 +1205,12 @@ function RenderedMarkdownSurface({
   | "wordWrap"
   | "onPostRender"
   | "onEditorChange"
+  | "onContentsChange"
 > & {
   threadRef: ScopedThreadRef;
   readOnly: boolean;
   workspaceMutationId: string | null;
+  onPendingChange: (relativePath: string, pending: boolean) => void;
 }) {
   const saveTarget = { environmentId, cwd, relativePath };
   useFileSaveSession(saveTarget, onPendingChange);
@@ -1264,7 +1293,8 @@ export default function FilePreviewPanel({
   const canOperatePreview = useEnvironmentScope(environmentId, AuthPreviewOperateScope);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const hostEnvironmentId = useAtomValue(hostEnvironmentIdAtom);
-  const remoteOpenState = useRemoteOpenState(environmentId);
+  const { state: remoteOpenState, isResolved: remoteOpenResolved } =
+    useRemoteOpenResolution(environmentId);
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(environmentId);
   const previewAvailable = usePreviewAvailable(environmentId);
@@ -1300,6 +1330,46 @@ export default function FilePreviewPanel({
   );
   const [fileRefreshRevision, setFileRefreshRevision] = useState(0);
   const attemptedPath = file.readError?.resolvedPath ?? file.readError?.operationPath;
+  const desktopBridge = getLocalTextFileBridge();
+  const desktopPlatform = desktopBridge?.getClientPlatform?.();
+  const serverPlatform = serverConfig?.environment.platform.os;
+  const localTextPath =
+    isHostFile &&
+    attachment === undefined &&
+    canWriteFiles &&
+    remoteOpenResolved &&
+    remoteOpenState.mode === "local-exec" &&
+    serverPlatform !== undefined &&
+    serverPlatform === (desktopPlatform === "win32" ? "windows" : desktopPlatform) &&
+    desktopBridge?.openLocalTextFile &&
+    desktopBridge.saveLocalTextFile &&
+    !isMedia &&
+    !isDocument &&
+    !isPdf
+      ? relativePath
+      : null;
+  const localFile = useLocalTextFile(
+    desktopBridge,
+    localTextPath,
+    file.data && !file.data.truncated ? file.data.contents : undefined,
+  );
+  const fileData =
+    localFile.contents === undefined
+      ? file.data
+      : { contents: localFile.contents, byteLength: localFile.contents.length, truncated: false };
+  const saveLocalFile = () => {
+    void localFile.save().then((saved) => {
+      if (saved) file.refresh();
+    });
+  };
+  const discardLocalFileChanges = async () => {
+    const confirmed = await ensureLocalApi().dialogs.confirm(gt("Discard unsaved file changes?"), {
+      variant: "destructive",
+    });
+    if (!confirmed) return;
+    await localFile.discard();
+    file.refresh();
+  };
   // Folder links fail file reads; retain mutation refresh to detect conversion to files. Host folders own
   // roots; folderTrail keeps descendants.
   const breadcrumbPath =
@@ -1310,6 +1380,7 @@ export default function FilePreviewPanel({
   // A trail implies a folder before reads settle, preventing file-preview flashes while navigating up.
   const isFolder =
     attachment === undefined &&
+    localFile.contents === undefined &&
     (file.isNotFile || (folderTrail !== undefined && file.data === null && file.error === null));
   const hostFolderPath = isFolder && isHostFile ? relativePath : null;
   // A chat-linked folder reads as a file until its read settles, and a trail only implies a folder.
@@ -1358,7 +1429,7 @@ export default function FilePreviewPanel({
   const revealHandled =
     revealLine === null ||
     (handledReveal?.path === relativePath && handledReveal.requestId === revealRequestId);
-  const markdownRenderable = isMarkdown && (file.data?.byteLength ?? 0) <= FULL_TEXT_MAX_BYTES;
+  const markdownRenderable = isMarkdown && (fileData?.byteLength ?? 0) <= FULL_TEXT_MAX_BYTES;
   const renderMarkdown = markdownRenderable && renderMarkdownPreferred && revealHandled;
   const renderMermaid = isMermaid && renderMermaidPreferred && revealHandled;
   const renderBrowserFile = isPdf || (isHtml && renderBrowserFilePreferred && revealHandled);
@@ -1379,7 +1450,7 @@ export default function FilePreviewPanel({
     (!isMarkdown || markdownRenderable);
   const showsRawText =
     previewPath !== null &&
-    file.data !== null &&
+    fileData !== null &&
     !(isMarkdown && renderMarkdown) &&
     !renderMermaid &&
     !(tableDelimiter && renderTable) &&
@@ -1387,10 +1458,8 @@ export default function FilePreviewPanel({
     !isDocument;
   const mayOpenEditor =
     previewPath !== null &&
-    !isHostFile &&
-    canWriteFiles &&
-    file.error === null &&
-    !file.data?.truncated &&
+    (isHostFile ? localFile.contents !== undefined : canWriteFiles && file.error === null) &&
+    !fileData?.truncated &&
     !isMedia &&
     !isDocument &&
     !renderBrowserFile &&
@@ -1402,10 +1471,10 @@ export default function FilePreviewPanel({
     !isMedia &&
     !isDocument &&
     !isPdf &&
-    file.data &&
-    !file.data.truncated &&
-    file.data.contents.length > 0
-      ? file.data.contents
+    fileData &&
+    !fileData.truncated &&
+    fileData.contents.length > 0
+      ? fileData.contents
       : null;
   const showsLargeText =
     previewPath !== null &&
@@ -1414,7 +1483,7 @@ export default function FilePreviewPanel({
     !renderBrowserFile &&
     !isDocument &&
     !renderMermaid &&
-    file.data?.truncated === true;
+    fileData?.truncated === true;
   const copyLargeText = useRef<(() => Promise<string>) | null>(null);
   const { copyToClipboard, isCopied } = useCopyToClipboard({
     target: namedClipboardTarget(previewPath ?? ""),
@@ -1498,6 +1567,22 @@ export default function FilePreviewPanel({
         ? resolvePathLinkTarget(relativePath, cwd)
         : null;
   const onFilePostRender = useFileLineReveal(relativePath, revealLine, revealRequestId);
+  const editorProps =
+    relativePath && fileData
+      ? {
+          environmentId,
+          projectId,
+          cwd,
+          relativePath,
+          composerDraftTarget,
+          contents: fileData.contents,
+          resolvedTheme,
+          revealRequestId,
+          wordWrap,
+          onPostRender: onFilePostRender,
+          onEditorChange: handleEditorChangeStable,
+        }
+      : null;
   // Mounting the file read under the workspace mutation id refetches it after each mutation.
   useAtomMount(
     canReadFiles &&
@@ -1649,6 +1734,22 @@ export default function FilePreviewPanel({
               <WrapTextIcon className="size-3.5" />
             </FileSurfaceAction>
           ) : null}
+          {localFile.contents !== undefined ? (
+            <>
+              {localFile.dirty ? (
+                <span role="status" className="shrink-0 text-2xs text-muted-foreground">
+                  {localFile.saveStatus === "saving" ? gt("Saving…") : gt("Unsaved changes")}
+                </span>
+              ) : null}
+              <FileSurfaceAction
+                label={gt("Save changes")}
+                disabled={!localFile.dirty || localFile.saveStatus === "saving"}
+                onPress={saveLocalFile}
+              >
+                <SaveIcon className="size-3.5" />
+              </FileSurfaceAction>
+            </>
+          ) : null}
           {copyableContents !== null ? (
             <FileSurfaceAction
               label={isCopied ? gt("Copied") : gt("Copy contents")}
@@ -1691,22 +1792,47 @@ export default function FilePreviewPanel({
           <T>Read-only connection. Unsaved edits are kept until write access returns.</T>
         </div>
       ) : null}
+      {localFile.saveStatus === "conflict" || localFile.saveStatus === "unavailable" ? (
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-1.5">
+          <span role="alert" className="text-2xs text-destructive">
+            {localFile.saveStatus === "conflict"
+              ? gt("The file changed on disk. Your edits are still here.")
+              : gt("Could not save file")}
+          </span>
+          <Button variant="ghost" size="xs" onClick={() => void discardLocalFileChanges()}>
+            {gt("Discard changes")}
+          </Button>
+        </div>
+      ) : null}
       {previewPath &&
       attachment === undefined &&
       !isMedia &&
       !renderBrowserFile &&
-      file.data?.truncated &&
+      fileData?.truncated &&
       renderMermaid ? (
         <div className="shrink-0 border-b border-warning/20 bg-warning-surface px-3 py-1.5 text-2xs text-warning-foreground">
           {gt(
             "{count, plural, one {Preview limited to the first 1 MB of a {formatted} byte file.} other {Preview limited to the first 1 MB of a {formatted} byte file.}}",
-            { count: file.data.byteLength, formatted: file.data.byteLength.toLocaleString() },
+            { count: fileData.byteLength, formatted: fileData.byteLength.toLocaleString() },
           )}
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div
           className={cn("min-w-0 flex-1 flex-col overflow-hidden", previewPath ? "flex" : "hidden")}
+          data-desktop-file-editor={
+            localFile.contents !== undefined && mayOpenEditor ? true : undefined
+          }
+          onKeyDownCapture={(event) => {
+            if (localFile.contents === undefined || !mayOpenEditor) return;
+            const mod = isMacPlatform(navigator.platform)
+              ? event.metaKey && !event.ctrlKey
+              : event.ctrlKey && !event.metaKey;
+            if (!mod || event.altKey || event.shiftKey || event.key.toLowerCase() !== "s") return;
+            event.preventDefault();
+            event.stopPropagation();
+            saveLocalFile();
+          }}
         >
           {mayOpenEditor ? (
             // Panel focus lands here and passes to the editor once it attaches. sr-only keeps the
@@ -1787,8 +1913,8 @@ export default function FilePreviewPanel({
               delimiter={renderTable ? tableDelimiter : null}
               markdownCwd={renderMarkdown ? cwd : null}
               copyContents={copyLargeText}
-              preview={file.data?.contents ?? ""}
-              sizeBytes={file.data?.byteLength ?? 0}
+              preview={fileData?.contents ?? ""}
+              sizeBytes={fileData?.byteLength ?? 0}
               onPostRender={onFilePostRender}
               workspaceMutationId={workspaceMutationId}
               revealLine={revealLine}
@@ -1810,7 +1936,7 @@ export default function FilePreviewPanel({
               workspaceMutationId={workspaceMutationId}
               refreshRevision={fileRefreshRevision}
             />
-          ) : relativePath && file.error && file.data === null ? (
+          ) : relativePath && file.error && fileData === null ? (
             <div
               role="alert"
               className="scrollbar-gutter-both flex min-h-0 flex-1 flex-col overflow-auto"
@@ -1842,14 +1968,14 @@ export default function FilePreviewPanel({
                 ) : null}
               </div>
             </div>
-          ) : relativePath && file.data === null ? (
+          ) : relativePath && fileData === null ? (
             <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
               <Spinner size="lg" />
             </div>
-          ) : relativePath && file.data ? (
+          ) : relativePath && fileData ? (
             renderMermaid ? (
               <Suspense fallback={<FileSurfaceLoading />}>
-                <MermaidFilePreview text={file.data.contents} />
+                <MermaidFilePreview text={fileData.contents} />
               </Suspense>
             ) : isMarkdown && renderMarkdown ? (
               <RenderedMarkdownSurface
@@ -1858,43 +1984,43 @@ export default function FilePreviewPanel({
                 cwd={cwd}
                 relativePath={relativePath}
                 threadRef={threadRef}
-                contents={file.data.contents}
+                contents={fileData.contents}
                 workspaceMutationId={workspaceMutationId}
-                readOnly={file.data.truncated || isHostFile || !canWriteFiles}
+                readOnly={fileData.truncated || isHostFile || !canWriteFiles}
                 onPendingChange={onPendingChange}
               />
             ) : tableDelimiter && renderTable ? (
               <DelimitedTablePreview
                 key={relativePath}
                 name={relativePath}
-                text={file.data.contents}
+                text={fileData.contents}
                 delimiter={tableDelimiter}
               />
-            ) : file.data.truncated || isHostFile || !canWriteFiles ? (
+            ) : !editorProps ||
+              (localFile.contents === undefined &&
+                (fileData.truncated || isHostFile || !canWriteFiles)) ? (
               <SourceFilePreview
                 name={relativePath}
-                text={file.data.contents}
-                cacheKey={projectFileCacheKey(cwd, relativePath, file.data.contents)}
+                text={fileData.contents}
+                cacheKey={projectFileCacheKey(cwd, relativePath, fileData.contents)}
                 onPostRender={onFilePostRender}
                 wordWrap={wordWrap}
               />
             ) : (
               <DiffWorkerPoolProvider>
-                <EditableFileSurface
-                  key={`${relativePath}:${resolvedTheme}`}
-                  environmentId={environmentId}
-                  projectId={projectId}
-                  cwd={cwd}
-                  relativePath={relativePath}
-                  composerDraftTarget={composerDraftTarget}
-                  contents={file.data.contents}
-                  resolvedTheme={resolvedTheme}
-                  revealRequestId={revealRequestId}
-                  wordWrap={wordWrap}
-                  onPostRender={onFilePostRender}
-                  onPendingChange={onPendingChange}
-                  onEditorChange={handleEditorChangeStable}
-                />
+                {localFile.contents !== undefined ? (
+                  <EditableFileSurface
+                    {...editorProps}
+                    key={`${relativePath}:${resolvedTheme}`}
+                    onContentsChange={localFile.change}
+                  />
+                ) : (
+                  <WorkspaceEditableFileSurface
+                    {...editorProps}
+                    key={`${relativePath}:${resolvedTheme}`}
+                    onPendingChange={onPendingChange}
+                  />
+                )}
               </DiffWorkerPoolProvider>
             )
           ) : null}

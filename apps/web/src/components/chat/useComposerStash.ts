@@ -782,8 +782,7 @@ export function useComposerStash(input: {
     if (projectSelectionRequired || activePendingProgress !== null) return;
     void stashCurrentPromptStable();
   });
-  // Capture phase while the composer is mounted, so Mod+S never reaches the browser's save
-  // dialog even when a focused widget (the model picker search) stops the key.
+  // Capture phase while the composer is mounted keeps Mod+S from opening the browser's save dialog.
   const embedded = use(BackgroundThreadContext);
   const hiddenThread = use(HiddenThreadContext);
   const readShortcutContext = useStableCallback(() => ({
@@ -803,7 +802,14 @@ export function useComposerStash(input: {
         capture: true,
         context: readShortcutContext,
         // A side chat's composer takes the keys pressed in its pane; the main one takes the rest.
-        when: (event) => isInSideChatPane(event.target) === embedded,
+        when: (event) =>
+          isInSideChatPane(event.target) === embedded &&
+          !event
+            .composedPath()
+            .some(
+              (target) =>
+                target instanceof Element && target.hasAttribute("data-desktop-file-editor"),
+            ),
       },
     );
   }, [embedded, hiddenThread, handleStashShortcut, readShortcutContext]);

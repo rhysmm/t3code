@@ -22,6 +22,28 @@ import type {
   DesktopAppActivationResponse,
 } from "./desktopAppActivation.ts";
 
+export const DesktopOpenLocalTextFileInput = Schema.Struct({
+  // An absolute path or a path relative to the desktop user’s home.
+  absolutePath: Schema.NonEmptyString.check(Schema.isMaxLength(32_768)),
+});
+export type DesktopOpenLocalTextFileInput = typeof DesktopOpenLocalTextFileInput.Type;
+
+export const DesktopLocalTextFile = Schema.Struct({
+  key: Schema.String,
+  absolutePath: Schema.String,
+  contents: Schema.String,
+});
+export type DesktopLocalTextFile = typeof DesktopLocalTextFile.Type;
+
+export const DesktopSaveLocalTextFileInput = Schema.Struct({
+  key: Schema.String.check(Schema.isMaxLength(36)),
+  contents: Schema.String.check(Schema.isMaxLength(1024 * 1024)),
+});
+export type DesktopSaveLocalTextFileInput = typeof DesktopSaveLocalTextFileInput.Type;
+
+export const DesktopSaveLocalTextFileResult = Schema.Literals(["saved", "conflict", "unavailable"]);
+export type DesktopSaveLocalTextFileResult = typeof DesktopSaveLocalTextFileResult.Type;
+
 export interface ContextMenuItem<T extends string = string> {
   id: T;
   label: string;
@@ -1200,6 +1222,12 @@ export interface DesktopBridge {
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   /** Maps a Windows path to the one a local backend (`primary` or `wsl:…`) sees; null when it cannot. */
   toLocalBackendPath: (backendId: string, windowsPath: string) => Promise<string | null>;
+  openLocalTextFile?: (
+    input: DesktopOpenLocalTextFileInput,
+  ) => Promise<DesktopLocalTextFile | null>;
+  saveLocalTextFile?: (
+    input: DesktopSaveLocalTextFileInput,
+  ) => Promise<DesktopSaveLocalTextFileResult>;
   pickProjectFavicon: (initialPath?: string) => Promise<string | null>;
   pickThemeFiles: () => Promise<readonly PickedThemeFile[] | null>;
   setTheme: (theme: DesktopTheme) => Promise<void>;

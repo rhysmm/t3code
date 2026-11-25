@@ -12999,5 +12999,7 @@
   "92e129bf413a1220": "zurückgezogen",
   "f770b05803978529": "T3 Code Local neu starten, um {version} zu installieren",
   "aecf9c6f5d888b44": "Update {version} installieren und T3 Code Local neu starten?",
-  "a03cd747aa50a225": "Wechselt den Update-Kanal für verbundene Rechner."
+  "a03cd747aa50a225": "Wechselt den Update-Kanal für verbundene Rechner.",
+  "c7a5f31a93fa6c98": "Ungespeicherte Dateiänderungen verwerfen?",
+  "6e350917d09a0535": "Die Datei wurde auf dem Datenträger geändert. Deine Änderungen sind weiterhin vorhanden."
 }

@@ -17,6 +17,11 @@ const state = vi.hoisted(() => ({
   file: null as ProjectReadFileResult | null,
   optimistic: null as ProjectReadFileResult | null,
   writeFile: vi.fn(),
+  localEnvironment: true,
+  localFileConfig: false,
+  desktopFileBridge: undefined as ReturnType<
+    typeof import("./useLocalTextFile").getLocalTextFileBridge
+  >,
   assetUrl: { _tag: "Loading" } as import("~/assets/assetUrls").AssetUrlState,
   assetResources: [] as Array<import("@t3tools/contracts").AssetResource>,
   mintUrl: vi.fn<() => Promise<string | null>>(),
@@ -46,15 +51,27 @@ vi.mock(import("~/state/server"), async (original) => {
   const actual = await original();
   const { Atom } = await import("effect/reactivity");
   const noConfig = Atom.make(null);
+  const config = Atom.make({ environment: { platform: { os: "darwin" } } });
   return {
     ...actual,
-    serverEnvironment: { ...actual.serverEnvironment, configValueAtom: (() => noConfig) as never },
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      configValueAtom: (() => (state.localFileConfig ? config : noConfig)) as never,
+    },
   };
 });
 vi.mock(import("~/remoteOpen"), async (original) => ({
   ...(await original()),
   useRemoteOpenState: () => ({ mode: "local-exec" }) as never,
-  useRemoteOpenResolution: () => ({ state: { mode: "local-exec" }, isResolved: true }) as never,
+  useRemoteOpenResolution: () =>
+    ({
+      state: { mode: state.localEnvironment ? "local-exec" : "remote-unavailable" },
+      isResolved: true,
+    }) as never,
+}));
+vi.mock(import("./useLocalTextFile"), async (original) => ({
+  ...(await original()),
+  getLocalTextFileBridge: () => state.desktopFileBridge,
 }));
 vi.mock(import("~/hooks/useTheme"), async (original) => ({
   ...(await original()),
@@ -179,6 +196,9 @@ function setup() {
   localStorage.setItem(keys[1]!, "true");
   state.file = null;
   state.optimistic = null;
+  state.localEnvironment = true;
+  state.localFileConfig = false;
+  state.desktopFileBridge = undefined;
   state.assetUrl = { _tag: "Loading" };
   state.assetResources = [];
   state.openedBrowserUrls = [];
@@ -250,6 +270,90 @@ function deepActiveElement() {
   while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
   return active;
 }
+
+describe("desktop files outside the workspace", () => {
+  it("saves with the editor shortcut and keeps the draft on a disk conflict", async () => {
+    using _settings = setup();
+    state.localFileConfig = true;
+    const absolutePath = "/other/local-file.txt";
+    const contents = "original\n";
+    const openLocalTextFile = vi.fn(async () => ({ key: "file", absolutePath, contents }));
+    const saveLocalTextFile = vi
+      .fn<() => Promise<"saved" | "conflict">>()
+      .mockResolvedValueOnce("saved")
+      .mockResolvedValueOnce("conflict");
+    state.desktopFileBridge = {
+      openLocalTextFile,
+      saveLocalTextFile,
+      getClientPlatform: () => "darwin",
+    };
+    state.file = {
+      relativePath: absolutePath,
+      contents,
+      byteLength: contents.length,
+      truncated: false,
+    };
+    await using screen = await render(filePreview(absolutePath));
+
+    await expect.element(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    const focus = screen.getByLabelText("File contents");
+    (focus.element() as HTMLElement).focus();
+    await vi.waitFor(() => expect(deepActiveElement()?.matches("[data-content]")).toBe(true));
+    await userEvent.keyboard("x");
+    expect(saveLocalTextFile).not.toHaveBeenCalled();
+    const saveShortcut = isMacPlatform(navigator.platform)
+      ? "{Meta>}s{/Meta}"
+      : "{Control>}s{/Control}";
+    await userEvent.keyboard(saveShortcut);
+    await expect.element(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    expect(openLocalTextFile).toHaveBeenCalledWith({ absolutePath });
+    expect(saveLocalTextFile).toHaveBeenCalledExactlyOnceWith({
+      key: "file",
+      contents: `x${contents}`,
+    });
+
+    await userEvent.keyboard("y");
+    state.file = null;
+    await screen.rerender(filePreview(absolutePath));
+    await userEvent.keyboard(saveShortcut);
+    await expect
+      .element(screen.getByRole("alert"))
+      .toHaveTextContent("The file changed on disk. Your edits are still here.");
+    expect(saveLocalTextFile).toHaveBeenLastCalledWith({ key: "file", contents: `xy${contents}` });
+    expect(deepActiveElement()?.textContent).toContain("xyoriginal");
+    expect(state.writeFile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { kind: "remote", local: false, platform: "darwin" },
+    { kind: "non-native", local: true, platform: "win32" },
+  ])("does not open desktop files for a $kind environment", async ({ local, platform }) => {
+    using _settings = setup();
+    state.localEnvironment = local;
+    state.localFileConfig = true;
+    const absolutePath = "/other/preview-only.txt";
+    const contents = "preview only\n";
+    const openLocalTextFile = vi.fn();
+    state.desktopFileBridge = {
+      openLocalTextFile,
+      saveLocalTextFile: vi.fn(),
+      getClientPlatform: () => platform,
+    };
+    state.file = {
+      relativePath: absolutePath,
+      contents,
+      byteLength: contents.length,
+      truncated: false,
+    };
+    await using screen = await render(filePreview(absolutePath));
+
+    await expect.element(screen.getByText("preview only", { exact: true })).toBeVisible();
+    await expect
+      .element(screen.getByRole("button", { name: "Save changes" }))
+      .not.toBeInTheDocument();
+    expect(openLocalTextFile).not.toHaveBeenCalled();
+  });
+});
 
 describe("source file focus", () => {
   it("hands panel focus to the file's editor, which owns mod+f", async () => {
