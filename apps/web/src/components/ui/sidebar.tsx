@@ -354,7 +354,8 @@ function Sidebar({
         hideTimer = undefined;
         return;
       }
-      hideTimer ??= window.setTimeout(() => {
+      if (hideTimer !== undefined) return;
+      hideTimer = window.setTimeout(() => {
         hideTimer = undefined;
         if (!activeMenu.current) closeReveal();
       }, 250);
