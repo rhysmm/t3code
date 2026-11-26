@@ -3642,6 +3642,7 @@
   "8b2c842e0f21cf71": "Kasta ändringar",
   "2e045213702e6ab1": "Anslut en miljö för att skapa en schemalagd uppgift.",
   "2d1591cb44c0c5b6": "Inga miljöer matchar de aktuella filtren. Ändra filtren för att skapa en uppgift.",
+  "82c0494f92de3e6e": "Kör en gång vid missad körning",
   "d803687d3f35d6e2": "Ogiltig åldersgräns",
   "24fef66c1ab1b2a6": "Ange hela minuter från 1 till {max}, eller lämna tomt.",
   "9e596c405f5cea09": "En gång är inte tillgängligt här",

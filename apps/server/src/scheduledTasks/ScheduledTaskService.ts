@@ -349,15 +349,16 @@ function nextRunAt(
 }
 
 /**
- * Next run after an interrupted run. A one-time task counts from the run's start
- * (`lastRunAt`), so a manual run that began before its time does not use it up.
+ * Keep occurrences after an interrupted run's start for one-time and catch-up tasks.
  */
 function nextRunAfterRun(
   task: Pick<ScheduledTask, "enabled" | "schedule" | "lastRunAt">,
   now: DateTime.DateTime,
 ): string | null {
   const startedAt =
-    task.schedule.type === "once" && task.lastRunAt !== null
+    (task.schedule.type === "once" ||
+      (task.schedule.type === "fixed_time" && task.schedule.catchUp === true)) &&
+    task.lastRunAt !== null
       ? DateTime.make(task.lastRunAt)
       : Option.none();
   return nextRunAt(
@@ -716,7 +717,17 @@ export const layer = Layer.effect(
           title = excluded.title,
           prompt = excluded.prompt,
           enabled = excluded.enabled,
-          schedule_json = excluded.schedule_json,
+          schedule_json = CASE
+            WHEN json_extract(excluded.schedule_json, '$.type') = 'fixed_time'
+              AND json_type(excluded.schedule_json, '$.catchUp') IS NULL
+              AND json_type(scheduled_tasks.schedule_json, '$.catchUp') IN ('true', 'false')
+            THEN json_set(
+              excluded.schedule_json,
+              '$.catchUp',
+              scheduled_tasks.schedule_json -> '$.catchUp'
+            )
+            ELSE excluded.schedule_json
+          END,
           project_id = excluded.project_id,
           -- A first run may bind the thread while this save is in flight, so a save
           -- without a thread keeps any thread but the one it unbinds.
@@ -736,9 +747,9 @@ export const layer = Layer.effect(
           -- another edit changed the schedule or enabled state meanwhile.
           next_run_at = CASE
             WHEN ${keptSchedule === null ? 0 : 1} = 1
-              AND scheduled_tasks.schedule_json IN (
-                excluded.schedule_json,
-                ${keptSchedule === null ? null : JSON.stringify(keptSchedule)}
+              AND json_remove(scheduled_tasks.schedule_json, '$.catchUp') IN (
+                json_remove(excluded.schedule_json, '$.catchUp'),
+                json_remove(${keptSchedule === null ? null : JSON.stringify(keptSchedule)}, '$.catchUp')
               )
               AND scheduled_tasks.enabled = excluded.enabled
             THEN scheduled_tasks.next_run_at
@@ -779,7 +790,12 @@ export const layer = Layer.effect(
           ),
         );
 
-    const markRunning = (id: ScheduledTaskId, startedAtIso: string, webhookDeliveryId?: string) =>
+    const markRunning = (
+      task: ScheduledTask,
+      startedAtIso: string,
+      trigger: "scheduled" | "manual" | "webhook",
+      webhookDeliveryId?: string,
+    ) =>
       sql<{ task_id: string }>`
         UPDATE scheduled_tasks
         SET updated_at = ${startedAtIso},
@@ -787,14 +803,33 @@ export const layer = Layer.effect(
             last_run_webhook_delivery_id = ${webhookDeliveryId ?? null},
             last_run_status = 'running',
             last_run_error = NULL
-        WHERE task_id = ${id}
+        WHERE task_id = ${task.id}
+          ${
+            trigger === "scheduled"
+              ? sql`
+            AND created_at = ${task.createdAt}
+            AND enabled = 1
+            AND next_run_at IS ${task.nextRunAt}
+            AND last_run_status <> 'running'
+            ${
+              task.schedule.type === "fixed_time"
+                ? sql`
+              AND COALESCE(json_extract(schedule_json, '$.catchUp'), 0) = ${task.schedule.catchUp === true ? 1 : 0}
+            `
+                : sql``
+            }
+          `
+              : sql``
+          }
         RETURNING task_id
       `.pipe(
         Effect.mapError((cause) =>
-          taskError("Could not mark schedule task as running.", { taskId: id, cause }),
+          taskError("Could not mark schedule task as running.", { taskId: task.id, cause }),
         ),
         Effect.flatMap((rows) =>
-          rows.length > 0 ? Effect.void : taskError("Schedule task not found.", { taskId: id }),
+          rows.length > 0 || trigger === "scheduled"
+            ? Effect.succeed(rows.length > 0)
+            : taskError("Schedule task not found.", { taskId: task.id }),
         ),
       );
 
@@ -975,13 +1010,17 @@ export const layer = Layer.effect(
 
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
-      trigger: "scheduled" | "manual" | "webhook",
-      webhook?: {
-        readonly deliveryId: string;
-        readonly prompt: string;
-        readonly dispatched: Ref.Ref<boolean>;
-      },
+      trigger:
+        | { readonly type: "scheduled"; readonly polledAt: DateTime.DateTime }
+        | { readonly type: "manual" }
+        | {
+            readonly type: "webhook";
+            readonly deliveryId: string;
+            readonly prompt: string;
+            readonly dispatched: Ref.Ref<boolean>;
+          },
     ) {
+      const webhook = trigger.type === "webhook" ? trigger : undefined;
       // Read before reserving: nothing between the reservation and its release may fail.
       const startedAt = yield* localNow;
       const startedAtIso = iso(startedAt);
@@ -994,7 +1033,7 @@ export const layer = Layer.effect(
               reason: "The task was deleted before this delivery ran.",
             });
           }
-          if (trigger !== "scheduled") {
+          if (trigger.type !== "scheduled") {
             return yield* taskError("Schedule task not found.", { taskId: task.id });
           }
           return { task, threadId: null, dispatchFailed: false };
@@ -1012,18 +1051,32 @@ export const layer = Layer.effect(
           };
         const parsedNextRunAt =
           active.nextRunAt === null ? Option.none() : DateTime.make(active.nextRunAt);
-        if (
-          trigger === "scheduled" &&
-          (!active.enabled ||
+        if (trigger.type === "scheduled") {
+          if (
+            !active.enabled ||
             Option.isNone(parsedNextRunAt) ||
-            DateTime.toEpochMillis(parsedNextRunAt.value) > DateTime.toEpochMillis(startedAt))
-        ) {
-          return { task: active, threadId: null, dispatchFailed: false };
+            DateTime.toEpochMillis(parsedNextRunAt.value) > DateTime.toEpochMillis(startedAt)
+          ) {
+            return { task: active, threadId: null, dispatchFailed: false };
+          }
+          if (
+            active.schedule.type === "fixed_time" &&
+            active.schedule.catchUp !== true &&
+            isMissedFixedTimeRun(active.schedule, parsedNextRunAt.value, trigger.polledAt)
+          ) {
+            yield* rescheduleMissedRun(
+              active,
+              trigger.polledAt,
+              "missed",
+              "Missed a scheduled run because the server was not running at that time.",
+            );
+            return { task: active, threadId: null, dispatchFailed: false };
+          }
         }
         // A thread that stays busy would otherwise collect one copy of the
         // prompt per interval. A failed read falls through to the normal send.
         if (
-          trigger === "scheduled" &&
+          trigger.type === "scheduled" &&
           active.schedule.type !== "once" &&
           active.threadId !== null
         ) {
@@ -1056,12 +1109,14 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
-        if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
-        else
+        if (webhook === undefined) {
+          const claimed = yield* markRunning(active, startedAtIso, trigger.type);
+          if (!claimed) return { task: active, threadId: null, dispatchFailed: false };
+        } else
           yield* sql
             .withTransaction(
               Effect.gen(function* () {
-                yield* markRunning(active.id, startedAtIso, webhook.deliveryId);
+                yield* markRunning(active, startedAtIso, webhook.type, webhook.deliveryId);
                 // Recovery must distinguish this delivery from other windows waiting on the same task.
                 yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
               }),
@@ -1076,7 +1131,7 @@ export const layer = Layer.effect(
 
         const fireKey =
           webhook === undefined
-            ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
+            ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger.type}`
             : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
@@ -1257,7 +1312,7 @@ export const layer = Layer.effect(
         (reserved) =>
           reserved
             ? run
-            : trigger !== "scheduled"
+            : trigger.type !== "scheduled"
               ? Effect.fail(taskError("Schedule task is already running.", { taskId: task.id }))
               : Effect.succeed({ task, threadId: null, dispatchFailed: false }),
         (reserved) =>
@@ -1284,7 +1339,7 @@ export const layer = Layer.effect(
         missedRunAt: task.nextRunAt,
         rescheduledTo: next,
       });
-      // `task` can be a stale batch snapshot; a run or edit since then already moved the row on.
+      // A concurrent catch-up edit can keep next_run_at while changing whether to skip it.
       const updated = yield* sql`
         UPDATE scheduled_tasks
         SET next_run_at = ${next},
@@ -1300,8 +1355,10 @@ export const layer = Layer.effect(
                     THEN ${runError} ELSE last_run_error END`
             }
         WHERE task_id = ${task.id}
+          AND created_at IS ${task.createdAt}
           AND next_run_at IS ${task.nextRunAt}
           AND last_run_at IS ${task.lastRunAt}
+          ${runError === undefined ? sql`` : sql`AND COALESCE(json_extract(schedule_json, '$.catchUp'), 0) = 0`}
         RETURNING task_id
       `.pipe(
         Effect.mapError((cause) =>
@@ -1338,22 +1395,10 @@ export const layer = Layer.effect(
       const tasks = yield* listDueTasks(now).pipe(
         Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
       );
-      const due = tasks.flatMap((task) =>
-        task.nextRunAt === null ? [] : [{ task, dueAt: DateTime.makeUnsafe(task.nextRunAt) }],
-      );
       yield* Effect.forEach(
-        due,
-        ({ task, dueAt }) =>
-          Effect.suspend(() =>
-            isMissedFixedTimeRun(task.schedule, dueAt, now)
-              ? rescheduleMissedRun(
-                  task,
-                  now,
-                  "missed",
-                  "Missed a scheduled run because the server was not running at that time.",
-                )
-              : runTask(task, "scheduled"),
-          ).pipe(
+        tasks,
+        (task) =>
+          runTask(task, { type: "scheduled", polledAt: now }).pipe(
             Effect.catch((cause) =>
               Effect.logWarning("Scheduled task run failed", { taskId: task.id, cause }),
             ),
@@ -1514,9 +1559,6 @@ export const layer = Layer.effect(
           ? managedRuntimeModeDenial(managedPolicy.summary, input.runtimeMode)
           : undefined;
       if (modeDenial !== undefined) return yield* taskError(modeDenial, { taskId: id });
-      // Keep the existing next_run_at when the schedule itself is untouched:
-      // editing a title or prompt must not postpone (or resurrect) a due
-      // run — only schedule/enabled changes restart the clock.
       const schedule: ScheduledTask["schedule"] =
         input.schedule.type === "webhook"
           ? {
@@ -1591,6 +1633,7 @@ export const layer = Layer.effect(
           (yield* threadLaunch.isNonGitProject(input.projectId)))
           ? { type: "root" }
           : input.workspaceStrategy;
+      // Edits that keep the same cadence, including catch-up toggles, preserve pending runs.
       const scheduleUnchanged =
         existingTask !== null &&
         existingTask.enabled === input.enabled &&
@@ -1774,7 +1817,7 @@ export const layer = Layer.effect(
           taskId: input.id,
         });
       }
-      return yield* runTask(task, "manual").pipe(
+      return yield* runTask(task, { type: "manual" }).pipe(
         Effect.mapError((cause) =>
           isScheduledTaskError(cause)
             ? cause
@@ -2094,7 +2137,7 @@ export const layer = Layer.effect(
           Metrics.increment(Metrics.webhookRunsTotal, { outcome }),
         ]);
       const dispatched = yield* Ref.make(false);
-      return yield* runTask(task, "webhook", { deliveryId, prompt, dispatched }).pipe(
+      return yield* runTask(task, { type: "webhook", deliveryId, prompt, dispatched }).pipe(
         Effect.flatMap(({ dispatchFailed }) =>
           dispatchFailed
             ? runOutcome("failed").pipe(

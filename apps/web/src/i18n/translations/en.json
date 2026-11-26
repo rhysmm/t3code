@@ -9980,6 +9980,7 @@
   "aceef99b454c3fd2": "Run at",
   "06c1387ed52a09c7": "on",
   "c252355a8f2e8f2d": "Run every",
+  "28802448438c2f76": "Run once if missed",
   "a64cd4ce499fb678": "Enabled",
   "a8fad08ceff4e04f": "Disabled tasks stay saved but do not run.",
   "af3bf76ebab013ff": "Stored secret, enter a new value to replace",

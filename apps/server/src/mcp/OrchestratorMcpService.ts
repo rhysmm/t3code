@@ -2585,7 +2585,11 @@ const make = Effect.gen(function* () {
           title: input.title ?? existing.title,
           prompt: input.prompt ?? existing.prompt,
           enabled: input.enabled ?? existing.enabled,
-          schedule: input.schedule ?? existing.schedule,
+          schedule:
+            input.schedule ??
+            (existing.schedule.type === "fixed_time"
+              ? { ...existing.schedule, catchUp: undefined }
+              : existing.schedule),
           projectId: existing.projectId,
           threadId,
           threadMode:

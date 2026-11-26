@@ -43,6 +43,10 @@ const ScheduledTaskFixedTimeSchedule = Schema.Struct({
       description: "Default: every day.",
     }),
   ),
+  catchUp: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "True runs once after missed times. Default false on create; omission keeps it on edit.",
+  }),
 });
 
 const ISO_WITH_OFFSET =

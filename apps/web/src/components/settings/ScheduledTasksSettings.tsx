@@ -193,6 +193,7 @@ const EMPTY_DRAFT: DraftState = {
   runAt: "",
   savedRunAt: "",
   weekdays: new Set([1, 2, 3, 4, 5]),
+  catchUp: false,
   projectId: "",
   threadId: "",
   savedThreadId: "",
@@ -1480,6 +1481,8 @@ function ScheduledTaskEditorForm({
     task?.schedule.type === "once";
   const offersThreadModes =
     environment?.serverConfig?.environment.capabilities.scheduledTaskThreadModes === true;
+  const offersCatchUp =
+    environment?.serverConfig?.environment.capabilities.scheduledTaskCatchUp === true;
   const connected =
     environment?.connection.phase === "connected" && environment.serverConfig !== null;
   const tasksQuery = useEnvironmentQuery(
@@ -1621,7 +1624,7 @@ function ScheduledTaskEditorForm({
       reportFailure(gt("Invalid filter"), parsedFilters.error);
       return;
     }
-    const schedule = scheduleFromDraft(draft);
+    const schedule = scheduleFromDraft(draft, offersCatchUp);
     if (schedule === null) {
       for (const error of scheduleDraftErrors(draft)) reportFailure(error.title, error.description);
       return;
@@ -2335,6 +2338,19 @@ function ScheduledTaskEditorForm({
               </div>
             )}
           </div>
+
+          {offersCatchUp && draft.scheduleMode === "fixed" ? (
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="scheduled-task-catch-up">
+                <T>Run once if missed</T>
+              </Label>
+              <Switch
+                id="scheduled-task-catch-up"
+                checked={draft.catchUp}
+                onCheckedChange={(catchUp) => setDraft((current) => ({ ...current, catchUp }))}
+              />
+            </div>
+          ) : null}
 
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0 space-y-1">

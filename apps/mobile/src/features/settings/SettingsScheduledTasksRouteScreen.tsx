@@ -733,6 +733,7 @@ function TaskForm({
   const m = useMessages();
   const locale = useLocale();
   const { readEditor } = useScheduledTaskEditor();
+  const catchUpLabel = gt("Run once if missed");
   const navigation = useNavigation<NativeStackNavigationProp<ScheduledTaskRoutes>>();
   const tasks = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
@@ -800,6 +801,7 @@ function TaskForm({
     config?.environment.capabilities.oneTimeSchedules === true ||
     draft.task?.schedule.type === "once";
   const offersThreadModes = config?.environment.capabilities.scheduledTaskThreadModes === true;
+  const offersCatchUp = config?.environment.capabilities.scheduledTaskCatchUp === true;
   const save = async () => {
     const current = readEditor();
     if (!current || current.environmentId !== environmentId) return;
@@ -820,6 +822,7 @@ function TaskForm({
       draft.schedule.mode === "webhook" && liveTask?.schedule.type === "webhook"
         ? { ...draft.schedule, signature: liveTask.schedule.signature }
         : draft.schedule,
+      offersCatchUp,
     );
     if (
       draft.schedule.mode === "webhook" &&
@@ -1454,6 +1457,23 @@ function TaskForm({
               ) : null}
             </>
           )}
+          {offersCatchUp && draft.schedule.mode === "fixed_time" ? (
+            <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
+              <Text textRole="body" className="min-w-0 flex-1 text-foreground">
+                {catchUpLabel}
+              </Text>
+              <ThemedSwitch
+                accessibilityLabel={catchUpLabel}
+                value={draft.schedule.catchUp}
+                onValueChange={(catchUp) =>
+                  setDraft((current) => ({
+                    ...current,
+                    schedule: { ...current.schedule, catchUp },
+                  }))
+                }
+              />
+            </View>
+          ) : null}
           <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
             <Text textRole="body" className="min-w-0 flex-1 text-foreground">
               {gt("Enabled", { $context: "switch label, whether the task runs" })}

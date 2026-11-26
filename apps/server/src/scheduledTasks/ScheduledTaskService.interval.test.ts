@@ -195,12 +195,28 @@ const onceInput = {
 };
 
 it.effect.each([
-  { change: "a run completes", saved: ONCE, edited: ONCE, pause: false, expected: MOVED },
+  {
+    change: "a run completes",
+    saved: ONCE,
+    edited: ONCE,
+    pause: false,
+    catchUp: undefined,
+    expected: MOVED,
+  },
   {
     change: "a run completes during a padded-time edit",
     saved: { type: "fixed_time", timeOfDay: "9:00" },
     edited: { type: "fixed_time", timeOfDay: "09:00" },
     pause: false,
+    catchUp: undefined,
+    expected: MOVED,
+  },
+  {
+    change: "catch-up is enabled and a run completes",
+    saved: { type: "fixed_time", timeOfDay: "9:00", catchUp: false },
+    edited: { type: "fixed_time", timeOfDay: "09:00" },
+    pause: false,
+    catchUp: true,
     expected: MOVED,
   },
   {
@@ -208,11 +224,12 @@ it.effect.each([
     saved: ONCE,
     edited: ONCE,
     pause: true,
+    catchUp: undefined,
     expected: "2026-11-01T08:00:00.000Z",
   },
 ] as const)(
   "a title save keeps the stored next run only while nothing else changed: $change",
-  ({ saved, edited, pause, expected }) =>
+  ({ saved, edited, pause, catchUp, expected }) =>
     Effect.gen(function* () {
       yield* TestClock.setTime(Date.parse("2026-11-01T07:00:00.000Z"));
       // The project check runs between the save's read and write, so it stands in for
@@ -223,10 +240,10 @@ it.effect.each([
           return Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
             isScratchProject: () =>
-              sql`UPDATE scheduled_tasks SET next_run_at = ${MOVED}, enabled = ${pause ? 0 : 1}`.pipe(
-                Effect.as(false),
-                Effect.orDie,
-              ),
+              sql`UPDATE scheduled_tasks
+                SET next_run_at = ${MOVED}, enabled = ${pause ? 0 : 1}
+                  ${catchUp === undefined ? sql`` : sql`, schedule_json = json_set(schedule_json, '$.catchUp', json('true'))`}
+              `.pipe(Effect.as(false), Effect.orDie),
           });
         }),
       );
@@ -253,6 +270,7 @@ it.effect.each([
         );
         expect(renamed.task.enabled).toBe(true);
         expect(renamed.task.nextRunAt).toBe(expected);
+        if (catchUp !== undefined) expect(renamed.task.schedule).toHaveProperty("catchUp", catchUp);
       }).pipe(Effect.provide(layer));
     }).pipe(
       Effect.provideService(ServerActivation, Effect.never),
@@ -260,28 +278,42 @@ it.effect.each([
     ),
 );
 
-it.effect("keeps a one-time run after a restart interrupts an earlier manual run", () =>
-  Effect.gen(function* () {
-    yield* TestClock.setTime(Date.parse("2026-11-01T07:59:00.000Z"));
-    const sql = yield* SqlClient.SqlClient;
-    const created = yield* Effect.gen(function* () {
-      const service = yield* ScheduledTaskService.ScheduledTaskService;
-      return yield* service.upsert(yield* decodeInput(onceInput));
-    }).pipe(Effect.provide(serviceLayer));
-    yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running', last_run_at = '2026-11-01T07:59:00.000Z'`;
+it.effect.each([
+  {
+    schedule: ONCE,
+    restartAt: "2026-11-01T08:05:00.000Z",
+    expected: "2026-11-01T08:00:00.000Z",
+  },
+  {
+    schedule: { type: "fixed_time", timeOfDay: "07:59", catchUp: true },
+    restartAt: "2026-11-03T08:05:00.000Z",
+    expected: "2026-11-02T07:59:00.000Z",
+  },
+] as const)(
+  "keeps the next $schedule.type occurrence after an interrupted run",
+  ({ schedule, restartAt, expected }) =>
+    Effect.gen(function* () {
+      vi.stubEnv("TZ", "UTC");
+      yield* TestClock.setTime(Date.parse("2026-11-01T07:59:00.000Z"));
+      const sql = yield* SqlClient.SqlClient;
+      const created = yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        return yield* service.upsert(yield* decodeInput({ ...onceInput, schedule }));
+      }).pipe(Effect.provide(serviceLayer));
+      yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running', last_run_at = '2026-11-01T07:59:00.000Z'`;
 
-    yield* TestClock.setTime(Date.parse("2026-11-01T08:05:00.000Z"));
-    yield* Effect.gen(function* () {
-      const service = yield* ScheduledTaskService.ScheduledTaskService;
-      const [task] = (yield* service.list()).tasks;
-      expect(task?.id).toBe(created.task.id);
-      expect(task?.lastRunStatus).toBe("failed");
-      expect(task?.nextRunAt).toBe("2026-11-01T08:00:00.000Z");
-    }).pipe(Effect.provide(serviceLayer));
-  }).pipe(
-    Effect.provideService(ServerActivation, Effect.never),
-    Effect.provide(SqlitePersistence.layerMemory),
-  ),
+      yield* TestClock.setTime(Date.parse(restartAt));
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const [task] = (yield* service.list()).tasks;
+        expect(task?.id).toBe(created.task.id);
+        expect(task?.lastRunStatus).toBe("failed");
+        expect(task?.nextRunAt).toBe(expected);
+      }).pipe(Effect.provide(serviceLayer));
+    }).pipe(
+      Effect.provideService(ServerActivation, Effect.never),
+      Effect.provide(SqlitePersistence.layerMemory),
+    ),
 );
 
 it.effect("reports the stored task when the row was replaced during the run", () =>

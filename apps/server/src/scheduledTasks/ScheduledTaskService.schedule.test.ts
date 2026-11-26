@@ -69,7 +69,7 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect("preserves a due run when a save only pads the scheduled hour", () =>
+it.effect("preserves a due run when a save keeps the same cadence", () =>
   Effect.gen(function* () {
     const dueAt = DateTime.makeZonedUnsafe(
       { year: 2026, month: 7, day: 1, hour: 9, minute: 0, second: 0, millisecond: 0 },
@@ -114,9 +114,21 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
         id: created.task.id,
         schedule: { type: "fixed_time", timeOfDay: "09:00" },
       });
-      const updated = yield* service.upsert(update);
-      expect(updated.task.nextRunAt).toBe(expectedDueAt);
-      expect((yield* service.list()).tasks[0]?.nextRunAt).toBe(expectedDueAt);
+      const enabledCatchUp = yield* service.upsert({
+        ...update,
+        schedule: { type: "fixed_time", timeOfDay: "09:00", catchUp: true },
+      });
+      expect(enabledCatchUp.task.nextRunAt).toBe(expectedDueAt);
+
+      const editedByOlderClient = yield* service.upsert(update);
+      expect(editedByOlderClient.task.schedule).toMatchObject({ catchUp: true });
+
+      const disabledCatchUp = yield* service.upsert({
+        ...update,
+        schedule: { type: "fixed_time", timeOfDay: "09:00", catchUp: false },
+      });
+      expect(disabledCatchUp.task.nextRunAt).toBe(expectedDueAt);
+      expect(disabledCatchUp.task.schedule).toMatchObject({ catchUp: false });
 
       const rescheduled = yield* service.upsert({
         ...update,
@@ -438,7 +450,7 @@ it.effect(
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect("a fixed-time slot missed while the server was off shows on the task", () =>
+it.effect.each([false, true])("handles missed fixed-time runs with catch-up set to %s", (catchUp) =>
   Effect.gen(function* () {
     const at = (hour: number, minute = 0, day = 1) =>
       DateTime.makeZonedUnsafe(
@@ -477,7 +489,7 @@ it.effect("a fixed-time slot missed while the server was off shows on the task",
             title: "Morning bookkeeping",
             prompt: "Update yesterday's notes.",
             enabled: true,
-            schedule: { type: "fixed_time", timeOfDay: "09:00" },
+            schedule: { type: "fixed_time", timeOfDay: "09:00", ...(catchUp && { catchUp }) },
             projectId: "project-missed-slot",
             workspaceStrategy: { type: "root" },
             modelSelection: { instanceId: "codex", model: "gpt-5.4" },
@@ -490,30 +502,31 @@ it.effect("a fixed-time slot missed while the server was off shows on the task",
       }),
     );
 
-    // The server is off across the 09:00 slot and comes back at 09:30.
-    yield* TestClock.setTime(DateTime.toEpochMillis(at(9, 30)));
+    // The server is off across multiple 09:00 slots and comes back at 09:30.
+    yield* TestClock.setTime(DateTime.toEpochMillis(at(9, 30, 3)));
     const [listed] = yield* withServer(
       Effect.gen(function* () {
         const service = yield* ScheduledTaskService.ScheduledTaskService;
-        yield* TestClock.adjust("6 seconds");
+        yield* TestClock.adjust("11 seconds");
         return (yield* service.list()).tasks;
       }),
     );
 
     expect(listed?.id).toBe(taskId);
-    expect(yield* Ref.get(launches)).toBe(1);
-    expect(listed?.nextRunAt).toBe(DateTime.formatIso(DateTime.toUtc(at(9, 0, 2))));
-    // The skipped slot must not read as the earlier manual run's clean success.
-    expect({ status: listed?.lastRunStatus, error: listed?.lastRunError }).not.toEqual({
-      status: "succeeded",
-      error: null,
+    expect(yield* Ref.get(launches)).toBe(catchUp ? 2 : 1);
+    expect(listed?.nextRunAt).toBe(DateTime.formatIso(DateTime.toUtc(at(9, 0, 4))));
+    expect({ status: listed?.lastRunStatus, error: listed?.lastRunError }).toEqual({
+      status: catchUp ? "succeeded" : "failed",
+      error: catchUp
+        ? null
+        : "Missed a scheduled run because the server was not running at that time.",
     });
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect(
-  "a run made while the scheduler was busy is not overwritten by its stale missed slot",
-  () =>
+it.effect.each(["run manually", "enable catch-up", "disable catch-up"] as const)(
+  "uses current task state after a due batch started when the user chooses to %s",
+  (action) =>
     Effect.gen(function* () {
       const at = (hour: number, minute = 0, day = 1) =>
         DateTime.makeZonedUnsafe(
@@ -550,10 +563,7 @@ it.effect(
         effect.pipe(
           Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))),
         );
-      const upsert = (
-        title: string,
-        schedule: { type: "interval"; everyMs: number } | { type: "fixed_time"; timeOfDay: string },
-      ) =>
+      const upsert = (title: string, schedule: ScheduledTaskUpsertInput["schedule"]) =>
         Effect.gen(function* () {
           const service = yield* ScheduledTaskService.ScheduledTaskService;
           const { task } = yield* service.upsert(
@@ -576,7 +586,11 @@ it.effect(
       const morningId = yield* withServer(
         Effect.gen(function* () {
           yield* upsert("Slow", { type: "interval", everyMs: 60 * 60 * 1000 });
-          const id = yield* upsert("Morning", { type: "fixed_time", timeOfDay: "08:00" });
+          const id = yield* upsert("Morning", {
+            type: "fixed_time",
+            timeOfDay: "08:00",
+            catchUp: action === "disable catch-up",
+          });
           yield* upsert("Last", { type: "interval", everyMs: 150 * 60 * 1000 });
           return id;
         }),
@@ -587,17 +601,27 @@ it.effect(
           const service = yield* ScheduledTaskService.ScheduledTaskService;
           yield* TestClock.adjust("6 seconds");
           yield* Deferred.await(slowStarted);
-          yield* service.runNow({ id: morningId });
+          if (action === "run manually") {
+            yield* service.runNow({ id: morningId });
+          } else {
+            const task = (yield* service.list()).tasks.find((task) => task.id === morningId)!;
+            yield* service.upsert({
+              ...task,
+              schedule: {
+                type: "fixed_time",
+                timeOfDay: "08:00",
+                catchUp: action === "enable catch-up",
+              },
+            });
+          }
           yield* Deferred.succeed(releaseSlow, undefined);
           yield* Deferred.await(lastProcessed);
           return (yield* service.list()).tasks.find((task) => task.id === morningId);
         }),
       );
 
-      expect({ status: morning?.lastRunStatus, error: morning?.lastRunError }).toEqual({
-        status: "succeeded",
-        error: null,
-      });
+      expect(morning?.runCount).toBe(action === "disable catch-up" ? 0 : 1);
+      expect(morning?.lastRunStatus).toBe(action === "disable catch-up" ? "failed" : "succeeded");
       expect(morning?.nextRunAt).toBe(DateTime.formatIso(DateTime.toUtc(at(8, 0, 2))));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

@@ -127,6 +127,7 @@ export interface DraftState {
   /** The stored ISO run time, sent back unchanged when the field was not edited. */
   readonly savedRunAt: string;
   readonly weekdays: ReadonlySet<number>;
+  readonly catchUp: boolean;
   readonly projectId: string;
   readonly threadId: string;
   /** The thread the form opened with, so a save can tell a cleared destination from an unbound one. */
@@ -239,7 +240,10 @@ export function webhookDeliveryLabel(
   return label ? resolve(label) : delivery.outcome.replaceAll("_", " ");
 }
 
-export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedule | null {
+export function scheduleFromDraft(
+  draft: DraftState,
+  offersCatchUp = true,
+): ScheduledTaskUpsertSchedule | null {
   if (scheduleDraftErrors(draft).length > 0) return null;
   if (draft.scheduleMode === "once") {
     const saved = draft.savedRunAt ? new Date(draft.savedRunAt) : null;
@@ -305,6 +309,7 @@ export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedul
     type: "fixed_time",
     timeOfDay: draft.timeOfDay,
     ...(selectedEveryDay ? {} : { weekdays: [...draft.weekdays].toSorted() }),
+    ...(offersCatchUp ? { catchUp: draft.catchUp } : {}),
   };
 }
 
@@ -328,6 +333,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     runAt: schedule.type === "once" ? toDateTimeLocalValue(new Date(schedule.runAt)) : "",
     savedRunAt: schedule.type === "once" ? schedule.runAt : "",
     weekdays,
+    catchUp: schedule.type === "fixed_time" && schedule.catchUp === true,
     projectId: task.projectId,
     threadId: task.threadId ?? "",
     savedThreadId: task.threadId ?? "",
