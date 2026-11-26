@@ -327,6 +327,7 @@ function Sidebar({
   const edgeRef = () => clearRevealTimer;
   if (!canReveal && hovered) setHovered(false);
   const revealed = canReveal && hovered;
+  const translateOnHover = canReveal && !panelAnimationsActive;
 
   const panelRef = React.useRef<HTMLDivElement>(null);
   const activeMenu = React.useRef<Promise<unknown> | null>(null);
@@ -340,20 +341,35 @@ function Sidebar({
     if (!revealed) return;
     const sidebarRoot = panelRef.current?.closest('[data-slot="sidebar"]');
     const wrapper = sidebarRoot?.closest('[data-slot="sidebar-wrapper"]');
-    const onPointerOut = (event: PointerEvent) => {
-      const next = event.relatedTarget;
+    let hideTimer: number | undefined;
+    const updateHoverTarget = (next: EventTarget | null) => {
       if (activeMenu.current) return;
       if (
         next instanceof Element &&
         (sidebarRoot?.contains(next) ||
           (wrapper?.contains(next) && next.closest('[data-sidebar="trigger"]')) ||
           next.closest('[data-slot="menu-positioner"]'))
-      )
+      ) {
+        window.clearTimeout(hideTimer);
+        hideTimer = undefined;
         return;
-      closeReveal();
+      }
+      hideTimer ??= window.setTimeout(() => {
+        hideTimer = undefined;
+        if (!activeMenu.current) closeReveal();
+      }, 250);
     };
+    const onPointerOver = (event: PointerEvent) => updateHoverTarget(event.target);
+    const onPointerOut = (event: PointerEvent) => {
+      if (!event.relatedTarget) updateHoverTarget(null);
+    };
+    document.addEventListener("pointerover", onPointerOver);
     document.addEventListener("pointerout", onPointerOut);
-    return () => document.removeEventListener("pointerout", onPointerOut);
+    return () => {
+      window.clearTimeout(hideTimer);
+      document.removeEventListener("pointerover", onPointerOver);
+      document.removeEventListener("pointerout", onPointerOut);
+    };
   }, [revealed, closeReveal]);
   const holdRevealForMenu = <T,>(menu: Promise<T>) => {
     if (!revealed) return menu;
@@ -461,13 +477,13 @@ function Sidebar({
             ref={edgeRef}
             data-slot="sidebar-hover-edge"
             className={cn(
-              "fixed inset-y-0 top-[calc(var(--workspace-controls-top)+var(--workspace-topbar-height))] z-40 w-1",
+              "fixed inset-y-0 top-[calc(var(--workspace-controls-top)+var(--workspace-topbar-height))] z-40 w-3",
               side === "left" ? "left-0" : "right-0",
             )}
             onPointerEnter={(event) => {
               if (event.pointerType === "touch" || revealed) return;
               clearRevealTimer();
-              revealTimer.current = window.setTimeout(() => setHovered(true), 150);
+              revealTimer.current = window.setTimeout(() => setHovered(true), 100);
             }}
             onPointerLeave={clearRevealTimer}
           />
@@ -487,11 +503,17 @@ function Sidebar({
         <div
           className={cn(
             "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
-            "[[data-panel-animations=true]_&]:transition-[left,right,width] [[data-panel-animations=true]_&]:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:ease-out",
-            revealed && "z-50 shadow-lg",
+            translateOnHover
+              ? "motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out"
+              : "[[data-panel-animations=true]_&]:transition-[left,right,width] [[data-panel-animations=true]_&]:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:ease-out",
+            canReveal && "z-50",
+            translateOnHover &&
+              revealed &&
+              (side === "left" ? "translate-x-full" : "-translate-x-full"),
+            revealed && "shadow-lg",
             side === "left" ? "left-0" : "right-0",
             offcanvasCollapsed &&
-              !revealed &&
+              (!revealed || translateOnHover) &&
               (side === "left"
                 ? "left-[calc(var(--sidebar-width)*-1)]"
                 : "right-[calc(var(--sidebar-width)*-1)]"),

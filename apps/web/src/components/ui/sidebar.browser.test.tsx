@@ -100,6 +100,11 @@ describe("Sidebar", () => {
     expect(select).toHaveBeenCalledOnce();
     await expect.element(trigger).toHaveAttribute("aria-pressed", "false");
     await userEvent.hover(screen.getByRole("main"));
+    expect(panel.inert).toBe(false);
+    await userEvent.hover(screen.getByRole("button", { name: "Thread" }));
+    await userEvent.click(screen.getByRole("button", { name: "Thread" }));
+    expect(select).toHaveBeenCalledTimes(2);
+    await userEvent.hover(screen.getByRole("main"));
     await vi.waitFor(() => expect(panel.inert).toBe(true));
     await userEvent.hover(edge);
     await vi.waitFor(() => expect(panel.inert).toBe(false));
