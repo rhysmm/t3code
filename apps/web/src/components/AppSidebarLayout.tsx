@@ -479,6 +479,7 @@ export function AppSidebarLayout({
             <Sidebar
               side="left"
               collapsible="offcanvas"
+              revealOnHover
               data-app-sidebar=""
               {...sidebarArea}
               role="navigation"

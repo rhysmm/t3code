@@ -17,6 +17,7 @@ import {
 } from "~/components/ui/sheet";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useResizeDrag } from "~/hooks/useResizeDrag";
+import { useStableCallback } from "~/hooks/useStableCallback";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { useClientSettings } from "~/hooks/useSettings";
 import {
@@ -82,12 +83,21 @@ type SidebarResolvedResizableOptions = {
 };
 
 type SidebarInstanceContextProps = {
+  holdRevealForMenu: <T>(menu: Promise<T>) => Promise<T>;
   resizable: SidebarResolvedResizableOptions | null;
   side: "left" | "right";
 };
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null);
 const SidebarInstanceContext = React.createContext<SidebarInstanceContextProps | null>(null);
+
+function passMenuThrough<T>(menu: Promise<T>) {
+  return menu;
+}
+
+function useSidebarMenu() {
+  return React.use(SidebarInstanceContext)?.holdRevealForMenu ?? passMenuThrough;
+}
 
 function useSidebar() {
   const context = React.use(SidebarContext);
@@ -288,6 +298,7 @@ function Sidebar({
   variant = "sidebar",
   collapsible = "offcanvas",
   resizable = false,
+  revealOnHover = false,
   className,
   children,
   ...props
@@ -296,6 +307,7 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset";
   collapsible?: "offcanvas" | "icon" | "none";
   resizable?: boolean | SidebarResizableOptions;
+  revealOnHover?: boolean;
 }) {
   const { isMobile, state, openMobile, setOpenMobile, setMobileSheetMounted } = useSidebar();
   const gt = useGT();
@@ -307,8 +319,62 @@ function Sidebar({
   const panelAnimationsActive = panelAnimationDurationMs > 0 && !prefersReducedMotion;
   const offcanvasCollapsed = !isMobile && collapsible === "offcanvas" && state === "collapsed";
 
+  const hoverCapable = useMediaQuery("(any-hover: hover)");
+  const canReveal = revealOnHover && offcanvasCollapsed && hoverCapable;
+  const [hovered, setHovered] = React.useState(false);
+  const revealTimer = React.useRef<number | undefined>(undefined);
+  const clearRevealTimer = () => window.clearTimeout(revealTimer.current);
+  const edgeRef = () => clearRevealTimer;
+  if (!canReveal && hovered) setHovered(false);
+  const revealed = canReveal && hovered;
+
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  const activeMenu = React.useRef<Promise<unknown> | null>(null);
+  const closeReveal = useStableCallback(() => {
+    moveFocusOutOfCollapsingSidebar();
+    setHovered(false);
+  });
+  // The pin control and portaled row menus live outside the panel's DOM subtree.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- track pointer exits across these separate roots
+  React.useEffect(() => {
+    if (!revealed) return;
+    const sidebarRoot = panelRef.current?.closest('[data-slot="sidebar"]');
+    const wrapper = sidebarRoot?.closest('[data-slot="sidebar-wrapper"]');
+    const onPointerOut = (event: PointerEvent) => {
+      const next = event.relatedTarget;
+      if (activeMenu.current) return;
+      if (
+        next instanceof Element &&
+        (sidebarRoot?.contains(next) ||
+          (wrapper?.contains(next) && next.closest('[data-sidebar="trigger"]')) ||
+          next.closest('[data-slot="menu-positioner"]'))
+      )
+        return;
+      closeReveal();
+    };
+    document.addEventListener("pointerout", onPointerOut);
+    return () => document.removeEventListener("pointerout", onPointerOut);
+  }, [revealed, closeReveal]);
+  const holdRevealForMenu = <T,>(menu: Promise<T>) => {
+    if (!revealed) return menu;
+    activeMenu.current = menu;
+    return menu.finally(() => {
+      if (activeMenu.current !== menu) return;
+      activeMenu.current = null;
+      if (
+        panelRef.current?.closest('[data-state="expanded"][data-collapsible="offcanvas"]') &&
+        !panelRef.current.matches(":hover")
+      )
+        closeReveal();
+    });
+  };
+
   const resolvedResizable = resolveSidebarResizable({ collapsible, isMobile, resizable });
-  const instanceContextValue: SidebarInstanceContextProps = { side, resizable: resolvedResizable };
+  const instanceContextValue: SidebarInstanceContextProps = {
+    side,
+    resizable: resolvedResizable,
+    holdRevealForMenu,
+  };
 
   if (collapsible === "none") {
     return (
@@ -384,12 +450,28 @@ function Sidebar({
         className="group peer hidden text-sidebar-foreground md:block"
         data-collapsible={state === "collapsed" ? collapsible : ""}
         data-collapsible-mode={collapsible}
-        inert={offcanvasCollapsed}
         data-side={side}
         data-slot="sidebar"
-        data-state={state}
+        data-state={revealed ? "expanded" : state}
         data-variant={variant}
       >
+        {canReveal && (
+          <div
+            aria-hidden="true"
+            ref={edgeRef}
+            data-slot="sidebar-hover-edge"
+            className={cn(
+              "fixed inset-y-0 top-[calc(var(--workspace-controls-top)+var(--workspace-topbar-height))] z-40 w-1",
+              side === "left" ? "left-0" : "right-0",
+            )}
+            onPointerEnter={(event) => {
+              if (event.pointerType === "touch" || revealed) return;
+              clearRevealTimer();
+              revealTimer.current = window.setTimeout(() => setHovered(true), 150);
+            }}
+            onPointerLeave={clearRevealTimer}
+          />
+        )}
         <div
           className={cn(
             "relative w-(--sidebar-width) bg-transparent",
@@ -406,14 +488,20 @@ function Sidebar({
           className={cn(
             "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
             "[[data-panel-animations=true]_&]:transition-[left,right,width] [[data-panel-animations=true]_&]:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:ease-out",
-            side === "left"
-              ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
-              : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
+            revealed && "z-50 shadow-lg",
+            side === "left" ? "left-0" : "right-0",
+            offcanvasCollapsed &&
+              !revealed &&
+              (side === "left"
+                ? "left-[calc(var(--sidebar-width)*-1)]"
+                : "right-[calc(var(--sidebar-width)*-1)]"),
             variant === "floating" || variant === "inset"
               ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
               : "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
             className,
           )}
+          ref={panelRef}
+          inert={offcanvasCollapsed && !revealed}
           data-slot="sidebar-container"
           {...props}
         >
@@ -1030,4 +1118,5 @@ export {
   useMobileSidebarSheetMounted,
   useSidebar,
   useSidebarVisibility,
+  useSidebarMenu,
 };

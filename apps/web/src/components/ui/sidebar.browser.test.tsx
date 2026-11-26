@@ -3,14 +3,37 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
 
+import { showContextMenuFallback } from "~/contextMenuFallback";
 import { render } from "../../../test/render";
-import { Sidebar, SidebarProvider, SidebarRail, SidebarTrigger, useSidebar } from "./sidebar";
+import {
+  Sidebar,
+  SidebarProvider,
+  SidebarRail,
+  SidebarTrigger,
+  useSidebar,
+  useSidebarMenu,
+} from "./sidebar";
 
 function CollapseFromInside() {
   const { setOpen } = useSidebar();
   return (
     <button type="button" onClick={() => setOpen(false)}>
       Collapse
+    </button>
+  );
+}
+
+function ThreadMenu() {
+  const holdRevealForMenu = useSidebarMenu();
+  return (
+    <button
+      onClick={() =>
+        void holdRevealForMenu(
+          showContextMenuFallback([{ id: "open", label: "Open thread" }], { x: 400, y: 200 }),
+        )
+      }
+    >
+      Actions
     </button>
   );
 }
@@ -42,10 +65,58 @@ describe("Sidebar", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Collapse" }));
 
-    const sidebar = screen.container.querySelector<HTMLElement>('[data-slot="sidebar"]')!;
+    const sidebar = screen.container.querySelector<HTMLElement>('[data-slot="sidebar-container"]')!;
     await vi.waitFor(() => expect(sidebar.inert).toBe(true));
     const trigger = screen.container.querySelector('[data-slot="sidebar-trigger"]');
     await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it("reveals the collapsed sidebar over the page until the pointer leaves", async () => {
+    await page.viewport(1280, 800);
+    const select = vi.fn();
+    await using screen = await render(
+      <SidebarProvider defaultOpen={false}>
+        <Sidebar revealOnHover>
+          <ThreadMenu />
+          <button className="mt-12" onClick={select}>
+            Thread
+          </button>
+        </Sidebar>
+        <div className="fixed top-0 left-0 z-50">
+          <SidebarTrigger />
+        </div>
+        <main className="flex flex-1 items-center justify-center">Chat</main>
+      </SidebarProvider>,
+      { router: false /* selection is local to the test */ },
+    );
+    const edge = screen.container.querySelector<HTMLElement>('[data-slot="sidebar-hover-edge"]')!;
+    const gap = screen.container.querySelector<HTMLElement>('[data-slot="sidebar-gap"]')!;
+    const panel = screen.container.querySelector<HTMLElement>('[data-slot="sidebar-container"]')!;
+    const trigger = screen.getByRole("button", { name: "Toggle Sidebar" });
+    await userEvent.hover(edge);
+    await vi.waitFor(() => expect(panel.getBoundingClientRect().left).toBe(0));
+    expect(gap.getBoundingClientRect().width).toBe(0);
+    await userEvent.click(screen.getByRole("button", { name: "Thread" }));
+    expect(select).toHaveBeenCalledOnce();
+    await expect.element(trigger).toHaveAttribute("aria-pressed", "false");
+    await userEvent.hover(screen.getByRole("main"));
+    await vi.waitFor(() => expect(panel.inert).toBe(true));
+    await userEvent.hover(edge);
+    await vi.waitFor(() => expect(panel.inert).toBe(false));
+    await userEvent.click(screen.getByRole("button", { name: "Actions" }));
+    const item = page.getByRole("menuitem", { name: "Open thread" });
+    await userEvent.hover(item);
+    expect(panel.inert).toBe(false);
+    await userEvent.click(item);
+    await vi.waitFor(() => expect(panel.inert).toBe(true));
+    await userEvent.hover(edge);
+    await vi.waitFor(() => expect(panel.inert).toBe(false));
+    await userEvent.hover(trigger);
+    expect(panel.inert).toBe(false);
+    await userEvent.click(trigger);
+    await userEvent.hover(screen.getByRole("main"));
+    await expect.element(trigger).toHaveAttribute("aria-pressed", "true");
+    expect(gap.getBoundingClientRect().width).toBeGreaterThan(0);
   });
 
   it("abandons a rail drag when the sidebar collapses mid-drag", async () => {
@@ -129,7 +200,7 @@ describe("Sidebar", () => {
     await vi.waitFor(() => expect(sidebar.dataset.state).toBe("collapsed"));
     expect(container.getBoundingClientRect().right).toBe(0);
     expect(onResize).toHaveBeenLastCalledWith(200);
-    expect(sidebar.inert).toBe(true);
+    expect(container.inert).toBe(true);
     const handle = screen.container.querySelector<HTMLElement>(
       '[data-slot="sidebar-restore-handle"]',
     )!;
@@ -175,7 +246,7 @@ describe("Sidebar", () => {
     await vi.waitFor(() => expect(sidebar.dataset.state).toBe("expanded"));
     expect(container.getBoundingClientRect().left).toBe(0);
     expect(onResize).toHaveBeenLastCalledWith(258);
-    expect(sidebar.inert).toBe(false);
+    expect(container.inert).toBe(false);
   });
 
   it.each(["pointercancel", "lostpointercapture", "blur"])(

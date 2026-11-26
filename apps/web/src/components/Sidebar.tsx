@@ -257,7 +257,7 @@ import {
   ComboboxTrigger,
   useComboboxFilter,
 } from "./ui/combobox";
-import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
+import { SidebarContent, SidebarGroup, useSidebar, useSidebarMenu } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
 import { TooltipProvider, TooltipScrollDismissArea } from "./ui/tooltip";
@@ -943,6 +943,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const delegatedUnderParent = useDelegatedUnderParent();
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
+  const holdRevealForMenu = useSidebarMenu();
+  const settleContextMenu = <T,>(show: () => Promise<T>) => holdRevealForMenu(settlePromise(show));
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
@@ -1295,7 +1297,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       const api = readLocalApi();
       if (!api) return;
       void (async () => {
-        const clicked = await settlePromise(() =>
+        const clicked = await settleContextMenu(() =>
           api.contextMenu.show(
             [
               { id: "new-thread", label: gt("New thread") },
@@ -2399,7 +2401,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         timestampFormat,
         selectedThreads[0]!.environmentId,
       );
-      const clicked = await settlePromise(() =>
+      const clicked = await settleContextMenu(() =>
         api.contextMenu.show(
           [
             ...(unpinMenuItem
@@ -2628,7 +2630,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         const workspacePath =
           session.worktreePath ??
           projectByKey.get(`${session.environmentId}:${session.projectId}`)?.workspaceRoot;
-        const clicked = await settlePromise(() =>
+        const clicked = await settleContextMenu(() =>
           api.contextMenu.show(
             buildDraftActionMenuItems({
               hasPath: Boolean(workspacePath),
@@ -2716,7 +2718,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
-        const clicked = await settlePromise(() =>
+        const clicked = await settleContextMenu(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
               canOperate: readEnvironmentScope(
