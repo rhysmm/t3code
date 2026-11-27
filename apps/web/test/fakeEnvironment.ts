@@ -452,6 +452,24 @@ const subscribe = <A>(first: ReadonlyArray<A>, register?: (queue: Queue.Queue<A>
     }),
   );
 
+const serverConfigSnapshot = () => ({
+  version: 1 as const,
+  type: "snapshot" as const,
+  config: serverConfig(),
+});
+const serverConfigSubscribers = new Set<Queue.Queue<ReturnType<typeof serverConfigSnapshot>>>();
+const subscribeServerConfig = () =>
+  subscribe([serverConfigSnapshot()], (queue) => {
+    serverConfigSubscribers.add(queue);
+    return () => serverConfigSubscribers.delete(queue);
+  });
+// The connection outlives a test, so a later test's config must reach it as a pushed snapshot.
+const publishServerConfig = () => {
+  for (const queue of serverConfigSubscribers) {
+    Effect.runSync(Queue.offer(queue, serverConfigSnapshot()));
+  }
+};
+
 const handlers: Record<string, (input: never) => unknown> = {
   // Recorded, and accepted only when the scenario asks, since a pending command holds every
   // later command on its thread. Accepted commands' events never arrive.
@@ -552,8 +570,7 @@ const handlers: Record<string, (input: never) => unknown> = {
         if (vcsStatusSubscriber === queue) vcsStatusSubscriber = null;
       };
     }),
-  [WS_METHODS.subscribeServerConfig]: () =>
-    subscribe([{ version: 1 as const, type: "snapshot" as const, config: serverConfig() }]),
+  [WS_METHODS.subscribeServerConfig]: () => subscribeServerConfig(),
 };
 
 // Unanswered calls stay pending, like a server that has not replied yet.
@@ -569,8 +586,7 @@ const client = new Proxy(handlers, {
 const session: EnvironmentConnectionLease["session"] = {
   client: client as unknown as WsRpcProtocolClient,
   initialConfig: Effect.sync(serverConfig),
-  subscribeServerConfig: () =>
-    subscribe([{ version: 1 as const, type: "snapshot" as const, config: serverConfig() }]),
+  subscribeServerConfig: () => subscribeServerConfig(),
   ready: Effect.void,
   probe: Effect.void,
   inboundFrames: Effect.succeed(0),
@@ -635,6 +651,7 @@ export function installFakeEnvironment(
     })),
   ];
   holdCommand = options?.holdCommand ?? (() => false);
+  publishServerConfig();
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
     if (url.origin !== window.location.origin) return realFetch(input, init);
@@ -663,6 +680,7 @@ export function installFakeEnvironment(
       holdCommand = () => false;
       pendingDispatches = [];
       pendingAssetUrls = [];
+      publishServerConfig();
     },
   };
 }
@@ -717,16 +735,6 @@ export function answerRpc(method: string, handler: (input: never) => unknown): D
   };
 }
 
-export async function emitTerminalMetadata(event: TerminalMetadataStreamEvent): Promise<void> {
-  if (terminalMetadataSubscriber === null) throw new Error("No terminal metadata subscription");
-  await Effect.runPromise(Queue.offer(terminalMetadataSubscriber, event));
-}
-
-/** Whether the app holds a live subscription to the thread, so events reach it. */
-export function isThreadSubscribed(threadId: ThreadId): boolean {
-  return threadSubscribers.has(threadId);
-}
-
 /** Delivers one domain event, such as a run or turn-item update, to the thread's subscription. */
 export async function emitThreadEvent(
   threadId: ThreadId,
@@ -742,19 +750,4 @@ export async function emitThreadEvent(
       event: { ...event, id: EventId.make(`event-${sequence}`), threadId, occurredAt: AT },
     } as OrchestrationV2ThreadStreamItem),
   );
-}
-
-export function runningRun(threadId: ThreadId, id: string, ordinal: number, userMessageId: string) {
-  return {
-    ...run(threadId, RunId.make(id), ordinal, userMessageId),
-    status: "running" as const,
-    completedAt: null,
-  };
-}
-
-export { userItem };
-
-export async function emitVcsStatus(event: VcsStatusStreamEvent): Promise<void> {
-  if (vcsStatusSubscriber === null) throw new Error("No VCS status subscription");
-  await Effect.runPromise(Queue.offer(vcsStatusSubscriber, event));
 }

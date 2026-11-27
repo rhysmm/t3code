@@ -127,40 +127,40 @@ export function PullRequestReviewForm({
       !store.beginReviewSubmission(reviewKey)
     )
       return;
-    try {
-      const result = await submitReview({
-        environmentId,
-        input: {
-          ...reference,
-          ...(headSha === undefined ? {} : { expectedHeadSha: headSha }),
-          verdict: verdict.value,
-          body: text,
-          comments: submittedComments,
-        },
-      });
-      if (result._tag === "Failure") {
-        toastManager.add({
-          type: "error",
-          title: m(msg("The review could not be submitted")),
-          description: readableFailure(
-            squashAtomCommandFailure(result),
-            m(msg("The host refused the review. Your draft is still here to try again.")),
-          ),
-        });
-        onRefused();
-        return;
-      }
-      // Preserve new comments and summary edits made during submission.
-      store.removeComments(
-        reviewKey,
-        submittedComments.map((comment) => comment.id),
-      );
-      store.clearSummary(reviewKey, text);
-      toastManager.add({ type: "success", title: verdict.sent(term) });
-    } finally {
-      store.finishReviewSubmission(reviewKey);
-    }
-    onSubmitted();
+    const submitted = await submitReview({
+      environmentId,
+      input: {
+        ...reference,
+        ...(headSha === undefined ? {} : { expectedHeadSha: headSha }),
+        verdict: verdict.value,
+        body: text,
+        comments: submittedComments,
+      },
+    })
+      .then((result) => {
+        if (result._tag === "Failure") {
+          toastManager.add({
+            type: "error",
+            title: m(msg("The review could not be submitted")),
+            description: readableFailure(
+              squashAtomCommandFailure(result),
+              m(msg("The host refused the review. Your draft is still here to try again.")),
+            ),
+          });
+          onRefused();
+          return false;
+        }
+        // Preserve new comments and summary edits made during submission.
+        store.removeComments(
+          reviewKey,
+          submittedComments.map((comment) => comment.id),
+        );
+        store.clearSummary(reviewKey, text);
+        toastManager.add({ type: "success", title: verdict.sent(term) });
+        return true;
+      })
+      .finally(() => store.finishReviewSubmission(reviewKey));
+    if (submitted) onSubmitted();
   };
 
   // Forgejo requires a summary when requesting changes, even with inline comments.

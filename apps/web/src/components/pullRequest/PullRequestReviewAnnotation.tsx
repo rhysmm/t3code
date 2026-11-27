@@ -27,7 +27,6 @@ import { SpeechTextField, TextFieldSpeechControls } from "~/speech/useTextFieldS
 
 import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { Button } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { PullRequestEditButton } from "./PullRequestEditButton";
 import { isCommentSubmitShortcut } from "../diffs/commentSubmitShortcut";
 import {
@@ -48,6 +47,7 @@ import {
   PullRequestMarkdownTextarea,
   type PullRequestCompletionScope,
 } from "./PullRequestMarkdownTextarea";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const CARD_CLASS =
   "mx-3 my-2 rounded-xl border border-border/70 bg-background p-3 text-sm shadow-sm";
@@ -67,6 +67,7 @@ function submitKeys(input: {
     }
     if (event.key === "Escape" && input.onCancel) {
       event.preventDefault();
+      event.stopPropagation();
       input.onCancel();
     }
     if (isCommentSubmitShortcut(event, input.value, input.pending, input.allowEmpty)) {
@@ -212,34 +213,29 @@ export function InlineReviewThreads({
   return (
     <>
       {resolved.length > 0 ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                data-resolved-threads
-                aria-label={label}
-                aria-expanded={expanded}
-                // Sits on the commented line, which is the row above this annotation.
-                className="absolute right-3 bottom-full flex h-[var(--diffs-line-height,20px)] cursor-pointer items-center -space-x-1 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-                contentEditable={false}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={() =>
-                  setShown(new Set((expanded ? open : threads).map((thread) => thread.id)))
-                }
-              />
-            }
-          >
-            {[...authors].slice(0, 3).map(([login, author]) => (
-              <PullRequestActorAvatar
-                key={login}
-                actor={author}
-                className="ring-1 ring-background"
-              />
-            ))}
-          </TooltipTrigger>
-          <TooltipPopup side="left">{label}</TooltipPopup>
-        </Tooltip>
+        <SharedTooltipTrigger
+          render={
+            <button
+              type="button"
+              data-resolved-threads
+              aria-label={label}
+              aria-expanded={expanded}
+              // Sits on the commented line, which is the row above this annotation.
+              className="absolute right-3 bottom-full flex h-[var(--diffs-line-height,20px)] cursor-pointer items-center -space-x-1 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+              contentEditable={false}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() =>
+                setShown(new Set((expanded ? open : threads).map((thread) => thread.id)))
+              }
+            />
+          }
+          label={label}
+          side="left"
+        >
+          {[...authors].slice(0, 3).map(([login, author]) => (
+            <PullRequestActorAvatar key={login} actor={author} className="ring-1 ring-background" />
+          ))}
+        </SharedTooltipTrigger>
       ) : null}
       {threads.map((thread) => renderThread(thread, thread.isResolved && !shown.has(thread.id)))}
     </>
@@ -342,10 +338,8 @@ export function ReviewThreadCard({
     const store = usePullRequestReviewStore.getState();
     if (trimmed.length === 0 || pending || !store.beginReply(replyKey)) return;
     const submittedDraft = store.replies[replyKey] ?? "";
-    try {
-      const result = await settlePromise(() => onReply(trimmed));
-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-      if (!result.value) return;
+    const result = await settlePromise(async () => {
+      if (!(await onReply(trimmed))) return;
       // Replies return no comment; retain loaded data and reopen pagination for a later read.
       setLoadedPage((previous) =>
         previous?.threadId === thread.id
@@ -357,9 +351,9 @@ export function ReviewThreadCard({
       );
       store.clearReply(replyKey, submittedDraft);
       setReplying(false);
-    } finally {
-      store.finishReply(replyKey);
-    }
+    });
+    store.finishReply(replyKey);
+    if (result._tag === "Failure") throw squashAtomCommandFailure(result);
   };
   const loadMore = async () => {
     if (nextCommentsCursor === null || loadingMore) return;

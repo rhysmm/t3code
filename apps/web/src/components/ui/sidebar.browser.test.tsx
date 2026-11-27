@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import "~/index.css";
 
 import { showContextMenuFallback } from "~/contextMenuFallback";
-import { render } from "../../../test/render";
+import { act, fakeTimers, render } from "../../../test/render";
 import {
   Sidebar,
   SidebarProvider,
@@ -99,13 +99,30 @@ describe("Sidebar", () => {
     await userEvent.click(screen.getByRole("button", { name: "Thread" }));
     expect(select).toHaveBeenCalledOnce();
     await expect.element(trigger).toHaveAttribute("aria-pressed", "false");
-    await userEvent.hover(screen.getByRole("main"));
-    expect(panel.inert).toBe(false);
-    await userEvent.hover(screen.getByRole("button", { name: "Thread" }));
-    await userEvent.click(screen.getByRole("button", { name: "Thread" }));
-    expect(select).toHaveBeenCalledTimes(2);
-    await userEvent.hover(screen.getByRole("main"));
-    await vi.waitFor(() => expect(panel.inert).toBe(true));
+    {
+      using _timers = fakeTimers();
+      const main = screen.getByRole("main").element();
+      const thread = screen.getByRole("button", { name: "Thread" });
+      const pointerOver = (target: Element) => {
+        target.dispatchEvent(
+          new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }),
+        );
+      };
+      // Keep the rapid exit and reentry relative to the clock, even when Playwright is busy.
+      await act(async () => {
+        pointerOver(main);
+        pointerOver(thread.element());
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(panel.inert).toBe(false);
+      await userEvent.click(thread);
+      expect(select).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        pointerOver(main);
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(panel.inert).toBe(true);
+    }
     await userEvent.hover(edge);
     await vi.waitFor(() => expect(panel.inert).toBe(false));
     await userEvent.click(screen.getByRole("button", { name: "Actions" }));

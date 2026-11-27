@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
-  applyPullRequestDraftFilterChange,
+  applyPullRequestFilterChange,
   mergePullRequestListFilters,
   parsePullRequestQuery,
+  pullRequestMenuFilters,
 } from "./pullRequestQuery.ts";
 
 describe("reading qualifiers out of a typed query", () => {
@@ -154,17 +155,13 @@ describe("colon-namespaced labels typed as a search", () => {
   });
 });
 
-describe("changing the draft menu after typing a qualifier", () => {
+describe("changing a menu filter after typing its qualifier", () => {
   it("replaces or clears a typed draft qualifier and keeps the rest of the query", () => {
     expect(
-      applyPullRequestDraftFilterChange(
-        'draft:false fix label:"needs design"',
-        {},
-        { draft: "only" },
-      ),
+      applyPullRequestFilterChange('draft:false fix label:"needs design"', {}, { draft: "only" }),
     ).toEqual({ query: 'fix label:"needs design"', filters: { draft: "only" } });
     expect(
-      applyPullRequestDraftFilterChange('draft:true "draft:false" fix', { draft: "only" }, {}),
+      applyPullRequestFilterChange('draft:true "draft:false" fix', { draft: "only" }, {}),
     ).toEqual({
       query: '"draft:false" fix',
       filters: {},
@@ -173,11 +170,71 @@ describe("changing the draft menu after typing a qualifier", () => {
 
   it("keeps the typed query and the stored menu draft when another filter changes", () => {
     expect(
-      applyPullRequestDraftFilterChange(
+      applyPullRequestFilterChange(
         "draft:false fix",
         { draft: "only" },
         { draft: "hide", checks: "passing" },
       ),
     ).toEqual({ query: "draft:false fix", filters: { draft: "only", checks: "passing" } });
+  });
+
+  it("replaces or clears a typed checks or status qualifier", () => {
+    expect(applyPullRequestFilterChange("checks:passing fix", {}, { checks: "failing" })).toEqual({
+      query: "fix",
+      filters: { checks: "failing" },
+    });
+    expect(
+      applyPullRequestFilterChange(
+        'status:success "checks:passing" fix',
+        { checks: "failing" },
+        {},
+      ),
+    ).toEqual({ query: '"checks:passing" fix', filters: {} });
+  });
+
+  it("replaces a typed review qualifier and leaves the other typed qualifiers alone", () => {
+    expect(
+      applyPullRequestFilterChange(
+        "review:approved checks:failing draft:true fix",
+        {},
+        { review: "none", checks: "failing", draft: "only" },
+      ),
+    ).toEqual({ query: "checks:failing draft:true fix", filters: { review: "none" } });
+  });
+
+  it("keeps typed authors and saved author filters when replacing a typed menu qualifier", () => {
+    const saved = {
+      authors: ["alice", "bob"],
+      authorTeam: { host: "github.com", organization: "acme", slug: "platform" },
+    };
+    const query = "author:charlie author:dana review:approved fix";
+    const visible = pullRequestMenuFilters(parsePullRequestQuery(query).filters, saved);
+    const update = applyPullRequestFilterChange(query, saved, { ...visible, review: "none" });
+
+    expect(update).toEqual({
+      query: "author:charlie author:dana fix",
+      filters: { ...saved, review: "none" },
+    });
+    expect(
+      mergePullRequestListFilters(update.filters, parsePullRequestQuery(update.query).filters),
+    ).toEqual({ authors: ["charlie", "dana"], review: "none" });
+  });
+
+  it("keeps text the tokenizer skips, like an unclosed quote, when it strips a qualifier", () => {
+    expect(
+      applyPullRequestFilterChange('checks:passing "size:XL', {}, { checks: "failing" }).query,
+    ).toBe('"size:XL');
+    expect(
+      applyPullRequestFilterChange("fix  review:approved   wip", {}, { review: "none" }).query,
+    ).toBe("fix  wip");
+  });
+
+  it("shows typed qualifiers in place of the stored menu values", () => {
+    expect(
+      pullRequestMenuFilters(
+        parsePullRequestQuery("status:success review:none label:bug fix").filters,
+        { checks: "failing", draft: "hide", labels: [["wip"]] },
+      ),
+    ).toEqual({ checks: "passing", review: "none", draft: "hide", labels: [["wip"]] });
   });
 });
