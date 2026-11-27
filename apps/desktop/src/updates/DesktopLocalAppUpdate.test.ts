@@ -50,7 +50,7 @@ async function fixture() {
       artifact,
       appAsarSha256: "a".repeat(64),
     };
-    const writeReceipt = (fields: Partial<typeof receipt> = {}) =>
+    const writeReceipt = (fields: Partial<typeof receipt> & { serverManifest?: string } = {}) =>
       NodeFSP.writeFile(receiptPath, JSON.stringify({ ...receipt, ...fields }));
     await writeReceipt();
 
@@ -93,6 +93,24 @@ describe("verified T3 Code Local update", () => {
     expect(original?.id).toBeDefined();
     expect(rebuilt?.id).toBeDefined();
     expect(rebuilt?.id).not.toBe(original?.id);
+  });
+
+  it("changes the update ID when the paired server manifest path changes", async () => {
+    await using state = await fixture();
+    const desktopOnly = await readLocalAppCandidate(state.app);
+    const serverManifest = NodePath.join(
+      NodePath.dirname(state.receiptPath),
+      "candidate",
+      "verified-server.json",
+    );
+    await state.writeReceipt({ serverManifest });
+    const paired = await readLocalAppCandidate(state.app);
+    expect(paired).toMatchObject({ serverManifest });
+    expect(paired?.id).not.toBe(desktopOnly?.id);
+
+    await state.writeReceipt({ serverManifest: `${serverManifest}.new` });
+    const changed = await readLocalAppCandidate(state.app);
+    expect(changed?.id).not.toBe(paired?.id);
   });
 
   it("waits to show a candidate until local/t3code points to its commit", async () => {

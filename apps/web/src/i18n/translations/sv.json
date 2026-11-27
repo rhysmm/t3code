@@ -13033,7 +13033,7 @@
   "28802448438c2f76": "Kör en gång vid missad körning",
   "f770b05803978529": "Starta om T3 Code Local för att installera {version}",
   "4775892e1da95d20": "Hitta utkast",
-  "aecf9c6f5d888b44": "Installera uppdatering {version} och starta om T3 Code Local?",
+  "40cf17ec999e410a": "Installera uppdatering {version} och starta om T3 Code Local?\n\nOm en serveruppdatering ingår startas även den delade servern om. Pågående uppgifter och terminaler kan avbrytas.",
   "03ea284a2c9d17b0": "Den ursprungliga raden i {path} är inte tillgänglig. Du kan kopiera utkastet nedan.",
   "8237a11eec807b57": "⌘/Ctrl + Enter för att spara",
   "cf39601ae8d0246d": "Inga GitHub-team hittades",

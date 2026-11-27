@@ -13026,7 +13026,7 @@
   "28802448438c2f76": "Verpassten Lauf einmal nachholen",
   "f770b05803978529": "T3 Code Local neu starten, um {version} zu installieren",
   "4775892e1da95d20": "Entwurf finden",
-  "aecf9c6f5d888b44": "Update {version} installieren und T3 Code Local neu starten?",
+  "40cf17ec999e410a": "Update {version} installieren und T3 Code Local neu starten?\n\nWenn ein Serverupdate enthalten ist, wird auch der gemeinsame Server neu gestartet. Laufende Aufgaben und Terminals können unterbrochen werden.",
   "03ea284a2c9d17b0": "Die ursprüngliche Zeile in {path} ist nicht verfügbar. Du kannst deinen Entwurf unten kopieren.",
   "8237a11eec807b57": "⌘/Strg + Eingabetaste zum Speichern",
   "cf39601ae8d0246d": "Keine GitHub-Teams gefunden",

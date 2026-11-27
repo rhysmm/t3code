@@ -204,7 +204,12 @@ export function getDesktopUpdateInstallConfirmationMessage(
 ): string {
   const version = state.downloadedVersion ?? state.availableVersion;
   if (state.localCandidateId !== undefined && version !== null) {
-    return resolve(msg("Install update {version} and restart T3 Code Local?", { version }));
+    return resolve(
+      msg(
+        "Install update {version} and restart T3 Code Local?\n\nIf a server update is included, the shared server will also restart. Running tasks and terminals may be interrupted.",
+        { version },
+      ),
+    );
   }
   return version
     ? resolve(

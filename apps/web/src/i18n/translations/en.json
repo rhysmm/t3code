@@ -13035,7 +13035,7 @@
   "28802448438c2f76": "Run once if missed",
   "f770b05803978529": "Restart T3 Code Local to install {version}",
   "4775892e1da95d20": "Find draft",
-  "aecf9c6f5d888b44": "Install update {version} and restart T3 Code Local?",
+  "40cf17ec999e410a": "Install update {version} and restart T3 Code Local?\n\nIf a server update is included, the shared server will also restart. Running tasks and terminals may be interrupted.",
   "03ea284a2c9d17b0": "The original line in {path} is unavailable. You can copy your draft below.",
   "8237a11eec807b57": "⌘/Ctrl Enter to save",
   "cf39601ae8d0246d": "No GitHub teams found",

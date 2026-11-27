@@ -13021,7 +13021,7 @@
   "28802448438c2f76": "Ejecutar una vez si se omitió",
   "f770b05803978529": "Reinicia T3 Code Local para instalar {version}",
   "4775892e1da95d20": "Buscar borrador",
-  "aecf9c6f5d888b44": "¿Instalar la actualización {version} y reiniciar T3 Code Local?",
+  "40cf17ec999e410a": "¿Instalar la actualización {version} y reiniciar T3 Code Local?\n\nSi se incluye una actualización del servidor, también se reiniciará el servidor compartido. Las tareas y los terminales activos pueden interrumpirse.",
   "03ea284a2c9d17b0": "La línea original de {path} no está disponible. Puedes copiar tu borrador a continuación.",
   "8237a11eec807b57": "⌘/Ctrl + Intro para guardar",
   "cf39601ae8d0246d": "No se encontraron equipos de GitHub",

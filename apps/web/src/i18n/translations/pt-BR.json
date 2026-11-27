@@ -13026,7 +13026,7 @@
   "28802448438c2f76": "Executar uma vez se perder o horário",
   "f770b05803978529": "Reinicie o T3 Code Local para instalar {version}",
   "4775892e1da95d20": "Encontrar rascunho",
-  "aecf9c6f5d888b44": "Instalar a atualização {version} e reiniciar o T3 Code Local?",
+  "40cf17ec999e410a": "Instalar a atualização {version} e reiniciar o T3 Code Local?\n\nSe houver uma atualização do servidor, o servidor compartilhado também será reiniciado. As tarefas e os terminais em execução podem ser interrompidos.",
   "03ea284a2c9d17b0": "A linha original em {path} não está disponível. Você pode copiar seu rascunho abaixo.",
   "8237a11eec807b57": "⌘/Ctrl + Enter para salvar",
   "cf39601ae8d0246d": "Nenhuma equipe do GitHub encontrada",

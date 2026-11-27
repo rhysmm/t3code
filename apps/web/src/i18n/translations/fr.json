@@ -13026,7 +13026,7 @@
   "28802448438c2f76": "Rattraper une exécution manquée",
   "f770b05803978529": "Redémarrer T3 Code Local pour installer {version}",
   "4775892e1da95d20": "Retrouver le brouillon",
-  "aecf9c6f5d888b44": "Installer la mise à jour {version} et redémarrer T3 Code Local ?",
+  "40cf17ec999e410a": "Installer la mise à jour {version} et redémarrer T3 Code Local ?\n\nSi une mise à jour du serveur est incluse, le serveur partagé redémarrera aussi. Les tâches et les terminaux actifs peuvent être interrompus.",
   "03ea284a2c9d17b0": "La ligne d’origine dans {path} n’est pas disponible. Vous pouvez copier votre brouillon ci-dessous.",
   "8237a11eec807b57": "⌘/Ctrl + Entrée pour enregistrer",
   "cf39601ae8d0246d": "Aucune équipe GitHub trouvée",

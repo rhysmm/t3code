@@ -30,6 +30,7 @@ const receiptSchema = Schema.fromJsonString(
     commit: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
     artifact: Schema.String,
     appAsarSha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+    serverManifest: Schema.optional(Schema.String),
   }),
 );
 const decodeReceipt = Schema.decodeUnknownSync(receiptSchema);
@@ -135,9 +136,9 @@ export async function readLocalAppCandidate(
   ) {
     throw new Error("The verified update bundle is outside the Local build directory.");
   }
-  const id = NodeCrypto.createHash("sha256")
-    .update(JSON.stringify([receipt.commit, version, artifact, receipt.appAsarSha256]))
-    .digest("hex");
+  const identity = [receipt.commit, version, artifact, receipt.appAsarSha256];
+  if (receipt.serverManifest !== undefined) identity.push(receipt.serverManifest);
+  const id = NodeCrypto.createHash("sha256").update(JSON.stringify(identity)).digest("hex");
   return { ...receipt, artifact, version, id };
 }
 
@@ -171,7 +172,10 @@ directory=$2
 new_app=$3
 destination=$4
 home=$5
-shift 5
+server_helper=$6
+candidate_commit=$7
+server_manifest=$8
+shift 8
 previous_app="$directory/previous.app"
 deadline=$((SECONDS + 30))
 while /bin/kill -0 "$parent_pid" 2>/dev/null; do
@@ -192,10 +196,21 @@ launch() {
 
 if /bin/mv "$destination" "$previous_app"; then
   if /bin/mv "$new_app" "$destination"; then
+    if [ -n "$server_helper" ]; then
+      if ! /usr/bin/python3 -I "$server_helper" "$home" "$candidate_commit" "$server_manifest"; then
+        printf '%s\n' "The shared server update failed. Relaunching T3 Code Local." >&2
+        /usr/bin/osascript -e 'display notification "The shared server update failed. See update-install.log for details." with title "T3 Code Local"' || true
+      fi
+    fi
     if launch "$@"; then
       printf '%s\n' "Installed the verified Local update and requested its relaunch."
       /bin/rm -rf "$directory"
       exit 0
+    fi
+    if [ -n "$server_helper" ]; then
+      # The server may have migrated already. Keep the new app and its backup.
+      printf 'Could not relaunch the updated app. Its previous bundle is at %s.\n' "$previous_app" >&2
+      exit 1
     fi
     /bin/mv "$destination" "$new_app"
   fi
@@ -214,7 +229,7 @@ export async function stageLocalAppInstall(app: RunningLocalApp, candidate: Loca
   ) {
     throw new Error("The verified update changed. Check for updates again.");
   }
-  const { destination, directory } = updaterPaths(app.homeDirectory);
+  const { checkout, destination, directory } = updaterPaths(app.homeDirectory);
   const stage = await NodeFSP.mkdtemp(
     NodePath.join(NodePath.dirname(destination), ".t3code-local-update-"),
   );
@@ -222,6 +237,25 @@ export async function stageLocalAppInstall(app: RunningLocalApp, candidate: Loca
   try {
     await run("/usr/bin/ditto", [candidate.artifact, stagedApp], { timeout: 120_000 });
     await verifyStagedBundle(stagedApp, candidate);
+    let serverHelper = "";
+    if (candidate.serverManifest !== undefined) {
+      if (!NodePath.isAbsolute(candidate.serverManifest)) {
+        throw new Error("The shared server manifest path is not absolute.");
+      }
+      const { stdout } = await run(
+        "/usr/bin/git",
+        [
+          "--no-replace-objects",
+          "-C",
+          checkout,
+          "show",
+          `${candidate.commit}:scripts/activate-local-server.py`,
+        ],
+        { timeout: 5_000 },
+      );
+      serverHelper = NodePath.join(stage, "activate-local-server.py");
+      await NodeFSP.writeFile(serverHelper, stdout, { mode: 0o600 });
+    }
     if ((await readLocalAppCandidate(app))?.id !== candidate.id) {
       throw new Error("The verified update changed. Check for updates again.");
     }
@@ -239,6 +273,9 @@ export async function stageLocalAppInstall(app: RunningLocalApp, candidate: Loca
             stagedApp,
             destination,
             app.homeDirectory,
+            serverHelper,
+            candidate.commit,
+            candidate.serverManifest ?? "",
             ...process.argv.slice(1),
           ],
           {
